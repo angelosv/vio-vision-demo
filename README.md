@@ -10,11 +10,18 @@ This repository contains the prototype for **Vio.live Vision Engine**, a real-ti
 
 ## Installation
 ```bash
-pip install opencv-python ultralytics requests
+pip install opencv-python ultralytics requests streamlit
 ```
 
 ## Usage
-Run the script by passing a direct video URL:
+### Web Dashboard (Streamlit)
+Run the interactive frontend for a cool visual experience:
+```bash
+streamlit run app.py
+```
+
+### CLI Analyzer
+Run the background motor via command line:
 ```bash
 python main.py "https://your-video-url.mp4"
 ```
