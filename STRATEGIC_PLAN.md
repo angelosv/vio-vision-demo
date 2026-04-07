@@ -18,10 +18,10 @@ Goal: Make the demo shareable and visually "cool" for stakeholders.
 3.  **Dynamic Overlays:** Generate visual mockups of the Vio Ad (JSON) directly over the video stream in the dashboard.
 4.  **GitHub Packaging:** Push all assets, environment configs, and the app to `angelosv/vio-vision-demo`.
 
-## Phase 3: Integration & Future (Q3 2025)
+## Phase 3: Integration & Scalability (Q3 2025)
 Goal: Transition to a production-ready Social Commerce engine.
 
-1.  **Meta Checkout Prep:** Align JSON output with Meta’s "External Website Checkout" requirements.
+1.  **Direct Cart Integration:** Align JSON output with Vio's internal cart and checkout API requirements.
 2.  **Sports Fine-Tuning:** Refine detections for ball tracking and player jerseys (removing non-sports object detections).
 3.  **Cloud Scaling:** Architecture design for migrating local inference to high-performance GPU clusters.
 
