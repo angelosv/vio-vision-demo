@@ -1,12 +1,12 @@
-# VIO Live - Autonomous Vision Demo (PRO)
+# Vio Live - Autonomous Vision Demo (PRO)
 
 This repository contains the prototype for **Vio.live Vision Engine**, a real-time football match analyzer for social commerce.
 
 ## Features
-- **Dynamic Download:** Pass a video URL to start the analyzer.
-- **YOLOv11 Engine:** High-speed object detection for players and ball.
-- **Narrative Intelligence:** Identifies high-pressure situations to trigger e-commerce overlays.
-- **Full Match Tracking:** Logs event data in JSON for external integration.
+- **Direct Streaming:** Analyze remote video URLs (Firebase, Cloud Storage) without local download.
+- **Web Dashboard (Streamlit):** Real-time visual feed with a tactical match timeline.
+- **YOLOv11 Engine:** High-speed object detection for players and ball tracking.
+- **Narrative Logic:** Automatic triggers for e-commerce overlays during match events.
 
 ## Installation
 ```bash
@@ -14,27 +14,14 @@ pip install opencv-python ultralytics requests streamlit
 ```
 
 ## Usage
-### Web Dashboard (Streamlit)
-Run the interactive frontend for a cool visual experience:
+### 1. Web Dashboard (Recommended)
+Run the interactive frontend directly:
 ```bash
 streamlit run app.py
 ```
 
-### CLI Analyzer
-Run the background motor via command line:
-```bash
-python main.py "https://your-video-url.mp4"
-```
-
-## Output Example
-```json
-{
-  "timestamp": "12.4s",
-  "status": "DANGER - OFFENSIVE PHASE",
-  "narrative": "High pressure detected in opponent's half.",
-  "vio_ad": "FC Barcelona Jersey 2025 - BUY NOW"
-}
-```
+### 2. Strategic Roadmap
+Check `STRATEGIC_PLAN.md` for the R&D path and future integrations.
 
 ---
 *Created by Lab - Vio.live R&D*
