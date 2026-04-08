@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+websockets
+yt-dlp
+opencv-python
+Pillow
+requests
+pydantic
+ultralytics
+openai

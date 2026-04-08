@@ -1,0 +1,15 @@
+{
+  "name": "vio-vision-demo",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Vio Vision Demo — FastAPI backend + Next.js frontend",
+  "scripts": {
+    "setup": "pip3 install -r backend/requirements.txt && npm install --prefix web",
+    "vision-backend": "cd backend && python3 -m uvicorn main:app --host 0.0.0.0 --port 8080 --reload",
+    "vision-front": "npm run dev --prefix web",
+    "dev": "concurrently --names BACKEND,FRONTEND --prefix-colors cyan,magenta \"npm run vision-backend\" \"npm run vision-front\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}
