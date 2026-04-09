@@ -1,7 +1,7 @@
 import asyncio
 import json
 import os
-from typing import List
+from typing import List, Optional
 
 # Load .env if present
 try:
@@ -15,7 +15,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from stream_reader import frame_generator, get_video_metadata
+from stream_reader import VideoStream
 from analyzer import ai_service, detect_objects, frame_to_jpeg_base64
 
 
@@ -67,6 +67,10 @@ manager = ConnectionManager()
 analysis_running = asyncio.Event()
 analysis_running.set()  # start in "running" state
 
+# Active video stream (shared so seek commands can reach it)
+active_stream: Optional[VideoStream] = None
+seek_target: Optional[int] = None  # frame index to jump to
+
 
 @app.get("/api")
 async def root() -> dict:
@@ -83,15 +87,17 @@ async def start_demo(req: StartRequest) -> dict:
     analysis_running.set()
 
     async def run_analysis(url: str) -> None:
+        global active_stream, seek_target
+        stream = VideoStream(url)
+        active_stream = stream
+        seek_target = None
+
         try:
-            # Obtain real video metadata and broadcast to clients
-            meta = get_video_metadata(url)
-            fps = meta["fps"]
             await manager.broadcast({
                 "type": "metadata",
-                "fps": fps,
-                "total_frames": meta["total_frames"],
-                "duration": meta["duration"],
+                "fps": stream.fps,
+                "total_frames": stream.total_frames,
+                "duration": stream.duration,
             })
 
             FRAME_INTERVAL = 30   # ~1 frame/s at 30fps
@@ -101,9 +107,21 @@ async def start_demo(req: StartRequest) -> dict:
             sampled = 0
             idx = 0
 
-            for frame in frame_generator(url):
+            while True:
                 # Wait here if analysis is paused
                 await analysis_running.wait()
+
+                # Handle pending seek
+                if seek_target is not None:
+                    target = seek_target
+                    seek_target = None
+                    stream.seek(target)
+                    idx = target
+                    sampled = 0
+
+                ret, frame = stream.read()
+                if not ret:
+                    break
 
                 if idx % FRAME_INTERVAL == 0:
                     resized = cv2.resize(frame, (640, 360))
@@ -136,6 +154,10 @@ async def start_demo(req: StartRequest) -> dict:
 
         except Exception as e:
             await manager.broadcast({"type": "error", "message": str(e)})
+        finally:
+            if active_stream is stream:
+                active_stream = None
+            stream.release()
 
     asyncio.create_task(run_analysis(req.url))
     return {"status": "started", "url": req.url}
@@ -161,6 +183,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 elif cmd == "resume":
                     analysis_running.set()
                     await manager.broadcast({"type": "status", "status": "analyzing"})
+                elif cmd == "seek":
+                    global seek_target
+                    target_time = data.get("time", 0)
+                    if active_stream:
+                        seek_target = int(target_time * active_stream.fps)
             except (json.JSONDecodeError, AttributeError):
                 pass  # Ignore non-JSON or malformed messages
     except WebSocketDisconnect:

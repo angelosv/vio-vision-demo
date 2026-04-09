@@ -43,6 +43,28 @@ def yt_dlp_stream(url: str) -> Optional[subprocess.Popen]:
         return None
 
 
+class VideoStream:
+    """Wrapper around cv2.VideoCapture with seek support and metadata."""
+
+    def __init__(self, url: str):
+        self.cap = open_video_capture(url)
+        if self.cap is None:
+            raise RuntimeError(f"Could not open video stream: {url}")
+        self.fps: float = self.cap.get(cv2.CAP_PROP_FPS) or 25.0
+        self.total_frames: int = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        self.duration: float = self.total_frames / self.fps if self.fps > 0 else 0.0
+
+    def read(self):
+        return self.cap.read()
+
+    def seek(self, frame_index: int):
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, frame_index))
+
+    def release(self):
+        if self.cap:
+            self.cap.release()
+
+
 def get_video_metadata(url: str) -> dict:
     """Return FPS, total frame count, and duration for the given video URL."""
     cap = open_video_capture(url)

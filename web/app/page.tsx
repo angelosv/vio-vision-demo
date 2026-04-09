@@ -18,6 +18,10 @@ export default function Page() {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const frameRef = useRef(0);
   const fpsRef = useRef(25); // default, updated when backend sends metadata
+  // Smooth progress interpolation
+  const lastFrameTimeRef = useRef(0);   // authoritative time from last frame (seconds)
+  const lastFrameArrivalRef = useRef(0); // Date.now() when that frame arrived
+  const animFrameRef = useRef(0);
 
   // Build dynamic URLs in the client
   const getBackendHTTP = () => {
@@ -54,8 +58,10 @@ export default function Page() {
           }
         } else if (data.type === "event") {
           frameRef.current = data.frame_index ?? frameRef.current;
-          // Use real FPS for accurate time calculation
-          setCurrentTime(Math.floor(frameRef.current / fpsRef.current));
+          // Feed the interpolation loop with authoritative time
+          const frameTime = frameRef.current / fpsRef.current;
+          lastFrameTimeRef.current = frameTime;
+          lastFrameArrivalRef.current = Date.now();
 
           const event: MatchEvent = {
             id: String(data.frame_index ?? Date.now()),
@@ -94,6 +100,24 @@ export default function Page() {
     };
   }, [connectWS]);
 
+  // Smooth progress bar: interpolate between frame events
+  useEffect(() => {
+    if (status !== "analyzing") {
+      cancelAnimationFrame(animFrameRef.current);
+      return;
+    }
+    const tick = () => {
+      if (lastFrameArrivalRef.current > 0) {
+        const elapsed = (Date.now() - lastFrameArrivalRef.current) / 1000;
+        const interpolated = lastFrameTimeRef.current + elapsed;
+        setCurrentTime(Math.min(interpolated, totalTime));
+      }
+      animFrameRef.current = requestAnimationFrame(tick);
+    };
+    animFrameRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(animFrameRef.current);
+  }, [status, totalTime]);
+
   const handleStart = async (url?: string) => {
     const effectiveUrl = url ?? sourceUrl;
     if (!effectiveUrl) return;
@@ -115,11 +139,19 @@ export default function Page() {
     }
   };
 
-  // Send pause/resume commands to backend so it stops processing frames
-  const sendWsCommand = (type: string) => {
+  // Send commands to backend via WebSocket
+  const sendWsCommand = (type: string, extra: Record<string, unknown> = {}) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type }));
+      wsRef.current.send(JSON.stringify({ type, ...extra }));
     }
+  };
+
+  // Seek: tell backend to jump to a specific time in the video
+  const handleSeek = (time: number) => {
+    lastFrameTimeRef.current = time;
+    lastFrameArrivalRef.current = Date.now();
+    setCurrentTime(time);
+    sendWsCommand("seek", { time });
   };
 
   const handleStatusChange = (s: "idle" | "analyzing" | "paused", url?: string) => {
@@ -153,6 +185,7 @@ export default function Page() {
             currentTime={currentTime}
             totalTime={totalTime}
             onTimeChange={setCurrentTime}
+            onSeek={handleSeek}
           />
           <BottomPanels />
         </div>

@@ -12,6 +12,7 @@ interface VideoPanelProps {
   currentTime: number;
   totalTime: number;
   onTimeChange: (t: number) => void;
+  onSeek?: (time: number) => void;
 }
 
 function formatTime(seconds: number): string {
@@ -28,7 +29,7 @@ function labelColor(label: string): { border: string; bg: string; text: string }
   return                     { border: "#FE9330", bg: "#FE9330", text: "#000" };
 }
 
-export function VideoPanel({ currentTime, totalTime, onTimeChange }: VideoPanelProps) {
+export function VideoPanel({ currentTime, totalTime, onTimeChange, onSeek }: VideoPanelProps) {
   const [frameSrc, setFrameSrc] = useState(
     "https://images.unsplash.com/photo-1518605368461-1e129623b1bf?auto=format&fit=crop&q=80&w=2000"
   );
@@ -48,7 +49,9 @@ export function VideoPanel({ currentTime, totalTime, onTimeChange }: VideoPanelP
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const ratio = (e.clientX - rect.left) / rect.width;
-    onTimeChange(totalTime * ratio);
+    const targetTime = totalTime * ratio;
+    onTimeChange(targetTime);
+    onSeek?.(targetTime);
   };
 
   return (
