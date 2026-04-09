@@ -3,15 +3,25 @@
 import { useState } from "react";
 import type { Detection, TensionPoint } from "@/types/events";
 
+interface BallPos {
+  x: number;
+  y: number;
+}
+
 interface BottomPanelsProps {
   detections: Detection[];
   tensionHistory: TensionPoint[];
   teamColors?: string[];
+  ballHistory?: BallPos[];
 }
 
-export function BottomPanels({ detections, tensionHistory, teamColors = [] }: BottomPanelsProps) {
+const GRID_COLS = 20;
+const GRID_ROWS = 10;
+
+export function BottomPanels({ detections, tensionHistory, teamColors = [], ballHistory = [] }: BottomPanelsProps) {
   const [pitchOpen, setPitchOpen] = useState(true);
   const [momentumOpen, setMomentumOpen] = useState(true);
+  const [showHeatmap, setShowHeatmap] = useState(true);
 
   // ── Pitch Control data ──
   const players = detections.filter((d) => d.label === "Player" || d.label === "GK");
@@ -31,7 +41,19 @@ export function BottomPanels({ detections, tensionHistory, teamColors = [] }: Bo
           <h3 className="text-xs font-semibold text-brand-muted uppercase tracking-wider flex items-center gap-2">
             <span className="text-brand-primary">■</span> Pitch Control
           </h3>
-          <span className={`text-brand-muted text-xs transition-transform duration-300 ${pitchOpen ? "rotate-0" : "rotate-180"}`}>˄</span>
+          <div className="flex items-center gap-2">
+            {pitchOpen && (
+              <span
+                onClick={(e) => { e.stopPropagation(); setShowHeatmap((v) => !v); }}
+                className={`text-[10px] px-2 py-0.5 rounded cursor-pointer transition-colors ${
+                  showHeatmap ? "bg-brand-accent/20 text-brand-accent" : "bg-white/5 text-brand-muted"
+                }`}
+              >
+                Heatmap
+              </span>
+            )}
+            <span className={`text-brand-muted text-xs transition-transform duration-300 ${pitchOpen ? "rotate-0" : "rotate-180"}`}>˄</span>
+          </div>
         </button>
         {pitchOpen && (
           <div className="p-4 flex-1 flex flex-col gap-2">
@@ -43,6 +65,11 @@ export function BottomPanels({ detections, tensionHistory, teamColors = [] }: Bo
               {/* Penalty areas */}
               <div className="absolute top-1/4 left-0 w-[12%] h-1/2 border-r border-t border-b border-white/15 rounded-r" />
               <div className="absolute top-1/4 right-0 w-[12%] h-1/2 border-l border-t border-b border-white/15 rounded-l" />
+
+              {/* Ball heatmap overlay */}
+              {showHeatmap && ballHistory.length > 5 && (
+                <BallHeatmap data={ballHistory} />
+              )}
 
               {/* Player dots — coloured by team */}
               {players.map((p, i) => {
@@ -132,6 +159,50 @@ function centerX(d: Detection): number {
 }
 function centerY(d: Detection): number {
   return (d.box[1] + d.box[3]) / 2;
+}
+
+// ── Ball Heatmap ──
+
+function BallHeatmap({ data }: { data: { x: number; y: number }[] }) {
+  // Build a grid and count ball positions per cell
+  const grid: number[][] = Array.from({ length: GRID_ROWS }, () =>
+    Array(GRID_COLS).fill(0)
+  );
+  for (const { x, y } of data) {
+    const col = Math.min(Math.floor(x * GRID_COLS), GRID_COLS - 1);
+    const row = Math.min(Math.floor(y * GRID_ROWS), GRID_ROWS - 1);
+    grid[row][col]++;
+  }
+  const maxCount = Math.max(1, ...grid.flat());
+
+  return (
+    <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 1 }}>
+      {grid.map((row, r) =>
+        row.map((count, c) => {
+          if (count === 0) return null;
+          const intensity = count / maxCount;
+          // Color: green → yellow → red based on intensity
+          const r_c = Math.round(intensity > 0.5 ? 255 : intensity * 2 * 255);
+          const g_c = Math.round(intensity < 0.5 ? 255 : (1 - intensity) * 2 * 255);
+          const color = `rgb(${r_c},${g_c},0)`;
+          return (
+            <div
+              key={`${r}-${c}`}
+              className="absolute rounded-sm"
+              style={{
+                left: `${(c / GRID_COLS) * 100}%`,
+                top: `${(r / GRID_ROWS) * 100}%`,
+                width: `${100 / GRID_COLS}%`,
+                height: `${100 / GRID_ROWS}%`,
+                backgroundColor: color,
+                opacity: 0.15 + intensity * 0.45,
+              }}
+            />
+          );
+        })
+      )}
+    </div>
+  );
 }
 
 // ── Momentum Chart (SVG) ──

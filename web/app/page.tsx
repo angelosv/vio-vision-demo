@@ -18,6 +18,7 @@ export default function Page() {
   const [detections, setDetections] = useState<Detection[]>([]);
   const [teamColors, setTeamColors] = useState<string[]>([]);
   const [tensionHistory, setTensionHistory] = useState<TensionPoint[]>([]);
+  const [ballHistory, setBallHistory] = useState<{ x: number; y: number }[]>([]);
   const [alert, setAlert] = useState<MatchEvent | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -83,6 +84,14 @@ export default function Page() {
           // Store detections + team colors for BottomPanels
           setDetections(data.detections ?? []);
           if (data.team_colors) setTeamColors(data.team_colors);
+
+          // Track ball position for heatmap
+          const ballDet = (data.detections ?? []).find((d: Detection) => d.label === "Ball");
+          if (ballDet) {
+            const bx = (ballDet.box[0] + ballDet.box[2]) / 2;
+            const by = (ballDet.box[1] + ballDet.box[3]) / 2;
+            setBallHistory((prev) => [...prev, { x: bx, y: by }].slice(-500));
+          }
 
           // Build event
           const tensionScore = data.tension_score ?? 0;
@@ -203,6 +212,7 @@ export default function Page() {
     setDetections([]);
     setTeamColors([]);
     setTensionHistory([]);
+    setBallHistory([]);
     setAlert(null);
     frameRef.current = 0;
     fpsRef.current = 25;
@@ -279,7 +289,7 @@ export default function Page() {
             onTimeChange={setCurrentTime}
             onSeek={handleSeek}
           />
-          <BottomPanels detections={detections} tensionHistory={tensionHistory} teamColors={teamColors} />
+          <BottomPanels detections={detections} tensionHistory={tensionHistory} teamColors={teamColors} ballHistory={ballHistory} />
         </div>
 
         <EventsSidebar events={events} />
