@@ -106,10 +106,22 @@ export default function Page() {
     }
   };
 
-  // Wire status changes: pause just stops UI updates (backend keeps running)
+  // Send pause/resume commands to backend so it stops processing frames
+  const sendWsCommand = (type: string) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type }));
+    }
+  };
+
   const handleStatusChange = (s: "idle" | "analyzing" | "paused", url?: string) => {
     if (s === "analyzing" && status === "idle") {
       handleStart(url);
+    } else if (s === "paused" && status === "analyzing") {
+      sendWsCommand("pause");
+      setStatus("paused");
+    } else if (s === "analyzing" && status === "paused") {
+      sendWsCommand("resume");
+      setStatus("analyzing");
     } else {
       setStatus(s);
     }

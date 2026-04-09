@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from typing import List
 
@@ -61,6 +62,11 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+# Controls whether the analysis loop is running or paused.
+# Set = running, cleared = paused.
+analysis_running = asyncio.Event()
+analysis_running.set()  # start in "running" state
+
 
 @app.get("/api")
 async def root() -> dict:
@@ -73,6 +79,8 @@ async def start_demo(req: StartRequest) -> dict:
 
     # Set AI mode for this analysis session
     ai_service.mode = req.ai_mode
+    # Ensure analysis is running (not paused from a previous session)
+    analysis_running.set()
 
     async def run_analysis(url: str) -> None:
         try:
@@ -84,6 +92,9 @@ async def start_demo(req: StartRequest) -> dict:
             idx = 0
 
             for frame in frame_generator(url):
+                # Wait here if analysis is paused
+                await analysis_running.wait()
+
                 if idx % FRAME_INTERVAL == 0:
                     resized = cv2.resize(frame, (640, 360))
 
@@ -130,7 +141,18 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     await manager.connect(websocket)
     try:
         while True:
-            await websocket.receive_text()
+            raw = await websocket.receive_text()
+            try:
+                data = json.loads(raw)
+                cmd = data.get("type")
+                if cmd == "pause":
+                    analysis_running.clear()
+                    await manager.broadcast({"type": "status", "status": "paused"})
+                elif cmd == "resume":
+                    analysis_running.set()
+                    await manager.broadcast({"type": "status", "status": "analyzing"})
+            except (json.JSONDecodeError, AttributeError):
+                pass  # Ignore non-JSON or malformed messages
     except WebSocketDisconnect:
         manager.disconnect(websocket)
     except Exception:
