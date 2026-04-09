@@ -21,6 +21,7 @@ spec:
       containers:
       - name: web
         image: reachuqa2.azurecr.io/vio-vision-web:v0.4.1
+        imagePullPolicy: Always
         ports:
         - containerPort: 3000
           name: http

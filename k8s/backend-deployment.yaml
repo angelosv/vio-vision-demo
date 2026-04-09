@@ -21,6 +21,7 @@ spec:
       containers:
       - name: backend
         image: reachuqa2.azurecr.io/vio-vision-backend:v0.4.1
+        imagePullPolicy: Always
         ports:
         - containerPort: 8000
           name: http
