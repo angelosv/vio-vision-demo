@@ -6,8 +6,10 @@ import { VideoPanel } from "@/components/VideoPanel";
 import { BottomPanels } from "@/components/BottomPanels";
 import { EventsSidebar } from "@/components/EventsSidebar";
 import { AlertBanner } from "@/components/AlertBanner";
-import type { MatchEvent, Detection, TensionPoint } from "@/types/events";
+import type { MatchEvent, Detection, TensionPoint, SmartPoll, HighlightMoment } from "@/types/events";
 import type { DetectionFrame } from "@/components/VideoPanel";
+import { SmartPollOverlay } from "@/components/SmartPollOverlay";
+import { HighlightReel } from "@/components/HighlightReel";
 
 const API_VERSION = "0.4.0";
 
@@ -31,6 +33,12 @@ export default function Page() {
   // Scoreboard from Video Indexer
   const [scoreboard, setScoreboard] = useState<{ home_team?: string; away_team?: string; home_score: number; away_score: number } | null>(null);
   const [sceneMarkers, setSceneMarkers] = useState<{ start_sec: number }[]>([]);
+  // Smart Polls
+  const [activePoll, setActivePoll] = useState<SmartPoll | null>(null);
+  const triggeredPollsRef = useRef<Set<string>>(new Set());
+  // Highlight Reel
+  const [highlights, setHighlights] = useState<HighlightMoment[]>([]);
+  const [showHighlightReel, setShowHighlightReel] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -170,6 +178,37 @@ export default function Page() {
             setEvents((prev) => [engEvent, ...prev].slice(0, 100));
           }
 
+          // Smart poll handling
+          if (data.smart_poll?.poll_id) {
+            const pollId = data.smart_poll.poll_id;
+            if (!triggeredPollsRef.current.has(pollId) && !activePoll) {
+              triggeredPollsRef.current.add(pollId);
+              setActivePoll(data.smart_poll);
+            }
+          }
+
+          // Collect highlights
+          const isConfirmed = data.confirmed_goal || data.confirmed_card || data.confirmed_penalty;
+          const isHighTension = tensionScore >= 7;
+          const isSignificantEvent = ["goal", "penalty", "red_card", "yellow_card"].includes(data.event_type);
+          if ((isHighTension || isConfirmed || isSignificantEvent) && data.description) {
+            const highlight: HighlightMoment = {
+              id: String(data.frame_index ?? Date.now()),
+              timeSec: data.time_sec ?? frameTime,
+              timestamp: formatTime(data.frame_index ?? 0, fpsRef.current),
+              eventType: data.event_type,
+              description: data.description,
+              tensionScore,
+              category: mapCategory(data.event_type),
+              confirmed: !!isConfirmed,
+            };
+            setHighlights((prev) => {
+              const isDuplicate = prev.some((h) => Math.abs(h.timeSec - highlight.timeSec) < 5);
+              if (isDuplicate) return prev;
+              return [...prev, highlight].sort((a, b) => a.timeSec - b.timeSec);
+            });
+          }
+
           // Pass frame + detections + audio + team colors to VideoPanel
           if (data.frame_data) {
             window.dispatchEvent(new CustomEvent("vio-frame-update", {
@@ -181,9 +220,12 @@ export default function Page() {
               }
             }));
           }
-        } else if (data.type === "status" && data.status === "stopped") {
+        } else if (data.type === "status" && (data.status === "stopped" || data.status === "finished")) {
           sessionIdRef.current = null;
           setStatus("idle");
+          if (data.status === "finished") {
+            setShowHighlightReel(true);
+          }
         } else if (data.type === "error") {
           console.error("Backend error:", data.message);
         }
@@ -255,6 +297,10 @@ export default function Page() {
     setStreamFrames(true);
     setScoreboard(null);
     setSceneMarkers([]);
+    setActivePoll(null);
+    triggeredPollsRef.current.clear();
+    setHighlights([]);
+    setShowHighlightReel(false);
     detectionBufferRef.current.clear();
     frameRef.current = 0;
     fpsRef.current = 25;
@@ -285,6 +331,9 @@ export default function Page() {
       sessionIdRef.current = null;
     }
     setStatus("idle");
+    if (highlights.length > 0) {
+      setShowHighlightReel(true);
+    }
   };
 
   const handleSeek = (time: number) => {
@@ -327,26 +376,52 @@ export default function Page() {
 
       <main className="flex-1 flex overflow-hidden p-4 gap-4">
         <div className="flex-1 flex flex-col gap-4 min-w-0">
-          <VideoPanel
-            currentTime={currentTime}
-            totalTime={totalTime}
-            onTimeChange={setCurrentTime}
-            onSeek={handleSeek}
-            videoUrl={streamFrames ? null : videoUrl}
-            detectionBuffer={detectionBufferRef.current}
-            isPlaying={status === "analyzing"}
-            onPlayPause={() => {
-              if (status === "analyzing") handleStatusChange("paused");
-              else if (status === "paused") handleStatusChange("analyzing");
-            }}
-            scoreboard={scoreboard}
-            sceneMarkers={sceneMarkers}
-          />
+          <div className="relative flex-1">
+            <VideoPanel
+              currentTime={currentTime}
+              totalTime={totalTime}
+              onTimeChange={setCurrentTime}
+              onSeek={handleSeek}
+              videoUrl={streamFrames ? null : videoUrl}
+              detectionBuffer={detectionBufferRef.current}
+              isPlaying={status === "analyzing"}
+              onPlayPause={() => {
+                if (status === "analyzing") handleStatusChange("paused");
+                else if (status === "paused") handleStatusChange("analyzing");
+              }}
+              scoreboard={scoreboard}
+              sceneMarkers={sceneMarkers}
+              highlightMarkers={highlights.map((h) => ({ timeSec: h.timeSec, category: h.category }))}
+            />
+            <SmartPollOverlay poll={activePoll} onDismiss={() => setActivePoll(null)} />
+          </div>
           <BottomPanels detections={detections} tensionHistory={tensionHistory} teamColors={teamColors} ballHistory={ballHistory} />
         </div>
 
         <EventsSidebar events={events} />
       </main>
+
+      {/* Highlight Reel modal */}
+      {showHighlightReel && highlights.length > 0 && (
+        <HighlightReel
+          highlights={highlights}
+          onSeek={(timeSec) => {
+            setShowHighlightReel(false);
+            handleSeek(timeSec);
+          }}
+          onClose={() => setShowHighlightReel(false)}
+        />
+      )}
+
+      {/* Floating button to re-open highlights */}
+      {status === "idle" && highlights.length > 0 && !showHighlightReel && (
+        <button
+          onClick={() => setShowHighlightReel(true)}
+          className="fixed bottom-6 right-6 z-40 px-4 py-2 bg-brand-accent text-black font-semibold rounded-full shadow-lg hover:bg-brand-accent/90 transition-colors text-sm"
+        >
+          Highlights ({highlights.length})
+        </button>
+      )}
     </div>
   );
 }

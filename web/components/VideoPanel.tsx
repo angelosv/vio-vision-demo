@@ -20,6 +20,7 @@ interface VideoPanelProps {
   onPlayPause?: () => void;
   scoreboard?: { home_team?: string; away_team?: string; home_score: number; away_score: number } | null;
   sceneMarkers?: { start_sec: number }[];
+  highlightMarkers?: { timeSec: number; category: string }[];
 }
 
 function formatTime(seconds: number): string {
@@ -64,6 +65,7 @@ export function VideoPanel({
   onPlayPause,
   scoreboard,
   sceneMarkers,
+  highlightMarkers,
 }: VideoPanelProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [frameSrc, setFrameSrc] = useState(
@@ -281,6 +283,27 @@ export function VideoPanel({
                 title={`Scene at ${formatTime(scene.start_sec)}`}
               />
             ))}
+            {/* Highlight markers */}
+            {highlightMarkers?.map((hl, i) => {
+              const markerColor =
+                hl.category === "critical" ? "#ef4444" :
+                hl.category === "card" ? "#eab308" :
+                hl.category === "foul" ? "#f97316" :
+                "#38bdf8";
+              return (
+                <div
+                  key={`hl-${i}`}
+                  className="absolute top-0 h-full flex items-center z-[5]"
+                  style={{ left: `${(hl.timeSec / effectiveDuration) * 100}%` }}
+                  title={`Highlight at ${formatTime(hl.timeSec)}`}
+                >
+                  <div
+                    className="w-2 h-2 rotate-45"
+                    style={{ backgroundColor: markerColor, boxShadow: `0 0 4px ${markerColor}` }}
+                  />
+                </div>
+              );
+            })}
             <div
               className="absolute w-3 h-3 rounded-full bg-white shadow-[0_0_8px_#FFF] -mt-0.5 border-2 border-black z-10"
               style={{ left: `${progress}%` }}

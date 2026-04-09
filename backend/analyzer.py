@@ -125,6 +125,79 @@ VALID_EVENT_TYPES = {
 }
 
 
+# ─── Smart Poll Rules Engine ─────────────────────────────────────────────────
+
+class PollRulesEngine:
+    """Deterministic rules engine that triggers contextual polls based on match events."""
+
+    COOLDOWN = 45  # seconds between polls
+
+    def __init__(self):
+        self._triggered: set = set()
+        self._last_poll_time: float = 0.0
+
+    def reset(self):
+        self._triggered.clear()
+        self._last_poll_time = 0.0
+
+    def evaluate(
+        self,
+        event_type: str,
+        time_sec: float,
+        tension: int,
+        match_info: Dict[str, str],
+    ) -> Optional[Dict[str, Any]]:
+        """Evaluate rules and return a poll dict or None."""
+        now = time.time()
+        if now - self._last_poll_time < self.COOLDOWN:
+            return None
+
+        home = match_info.get("home_team", "Home")
+        away = match_info.get("away_team", "Away")
+
+        poll = None
+
+        # Rule: match start
+        if time_sec < 60 and "match_start" not in self._triggered:
+            poll = {"poll_id": "match_start", "question": f"Who will win?",
+                    "options": [home, away, "Draw"], "duration": 20}
+
+        # Rule: goal scored
+        elif event_type == "goal" and "goal_offside" not in self._triggered:
+            poll = {"poll_id": "goal_offside", "question": "Was it offside?",
+                    "options": ["Yes", "No"], "duration": 15}
+
+        # Rule: yellow card
+        elif event_type == "yellow_card":
+            pid = f"yellow_red_{int(time_sec)}"
+            if pid not in self._triggered:
+                poll = {"poll_id": pid, "question": "Will they get a red card?",
+                        "options": ["Yes", "No"], "duration": 15}
+
+        # Rule: penalty
+        elif event_type == "penalty" and "penalty_score" not in self._triggered:
+            poll = {"poll_id": "penalty_score", "question": "Will they score the penalty?",
+                    "options": ["Yes", "No"], "duration": 15}
+
+        # Rule: substitution window (minutes 60-75)
+        elif 3600 <= time_sec <= 4500 and "sub_prediction" not in self._triggered:
+            poll = {"poll_id": "sub_prediction", "question": "Which team makes the next substitution?",
+                    "options": [home, away], "duration": 20}
+
+        # Rule: free kick near goal
+        elif event_type == "free_kick" and tension >= 6:
+            pid = f"fk_goal_{int(time_sec)}"
+            if pid not in self._triggered:
+                poll = {"poll_id": pid, "question": "Free kick goal?",
+                        "options": ["Yes", "No"], "duration": 15}
+
+        if poll:
+            self._triggered.add(poll["poll_id"])
+            self._last_poll_time = now
+            return poll
+        return None
+
+
 class AIService:
     MAX_HISTORY = 5
     ENGAGEMENT_COOLDOWN = 30  # seconds between engagement events
@@ -135,11 +208,13 @@ class AIService:
         self.event_history: List[Dict[str, Any]] = []
         self.match_info: Dict[str, str] = {}  # {home_team, away_team}
         self._last_engagement_time: float = 0.0
+        self.poll_engine = PollRulesEngine()
 
     def clear_history(self) -> None:
         """Reset temporal context (e.g. on new analysis or seek)."""
         self.event_history = []
         self._last_engagement_time = 0.0
+        self.poll_engine.reset()
 
     def identify_match(self, frame: np.ndarray) -> Dict[str, str]:
         """Ask AI to identify teams from a frame. Stores result in self.match_info."""

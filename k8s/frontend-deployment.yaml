@@ -14,7 +14,7 @@ spec:
     metadata:
       labels:
         app: vio-vision-web
-        version: demo
+        version: v0.4.0
     spec:
       imagePullSecrets:
       - name: reachuqa2

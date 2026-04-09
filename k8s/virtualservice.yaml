@@ -18,7 +18,7 @@ spec:
         host: vio-vision-backend.vio-demo.svc.cluster.local
         port:
           number: 8000
-  # WebSocket routes for backend
+  # WebSocket routes for backend (timeout: 0s prevents Istio from closing long-lived connections)
   - match:
     - uri:
         prefix: "/ws"
@@ -27,6 +27,7 @@ spec:
         host: vio-vision-backend.vio-demo.svc.cluster.local
         port:
           number: 8000
+    timeout: 0s
   # Frontend routes (catch-all)
   - match:
     - uri:

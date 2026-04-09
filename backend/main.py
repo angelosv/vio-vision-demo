@@ -418,6 +418,16 @@ async def run_analysis(session: AnalysisSession) -> None:
                     frame_b64 = frame_to_jpeg_base64(resized)
                     payload["frame_data"] = f"data:image/jpeg;base64,{frame_b64}"
 
+                # Smart poll evaluation
+                poll = session.ai_service.poll_engine.evaluate(
+                    event_type=event.get("event_type", "normal_play"),
+                    time_sec=time_sec,
+                    tension=event.get("tension_score", 0),
+                    match_info=session.ai_service.match_info,
+                )
+                if poll:
+                    payload["smart_poll"] = poll
+
                 await session.broadcast(payload)
 
                 # Persist non-trivial events to SQLite
@@ -445,5 +455,6 @@ async def run_analysis(session: AnalysisSession) -> None:
         if session.stream:
             session.stream.release()
             session.stream = None
+        await session.broadcast({"type": "status", "status": "finished"})
         await db.end_session(session.id, duration)
         sessions.pop(session.id, None)
