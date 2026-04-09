@@ -21,7 +21,9 @@ from audio_analyzer import AudioAnalyzer
 from analyzer import AIService, detect_objects, extract_team_colors, frame_to_jpeg_base64
 
 
-app = FastAPI(title="Vio Vision Demo Backend")
+API_VERSION = "0.3.0"
+
+app = FastAPI(title="Vio Vision Demo Backend", version=API_VERSION)
 
 app.add_middleware(
     CORSMiddleware,
@@ -130,7 +132,7 @@ manager = ConnectionManager()
 
 @app.get("/api")
 async def root() -> dict:
-    return {"status": "ok", "message": "Vio Vision Demo Backend"}
+    return {"status": "ok", "message": "Vio Vision Demo Backend", "api_version": API_VERSION}
 
 
 @app.post("/api/start")
@@ -228,6 +230,7 @@ async def run_analysis(session: AnalysisSession) -> None:
 
         await session.broadcast({
             "type": "metadata",
+            "api_version": API_VERSION,
             "fps": stream.fps,
             "total_frames": stream.total_frames,
             "duration": stream.duration,

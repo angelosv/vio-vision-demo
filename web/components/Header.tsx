@@ -15,6 +15,8 @@ interface HeaderProps {
   onSourceUrlChange: (url: string) => void;
   aiMode: AIMode;
   onAIModeChange: (mode: AIMode) => void;
+  frontendVersion: string;
+  backendVersion: string | null;
 }
 
 export function Header({
@@ -24,6 +26,8 @@ export function Header({
   onSourceUrlChange,
   aiMode,
   onAIModeChange,
+  frontendVersion,
+  backendVersion,
 }: HeaderProps) {
   const [localUrl, setLocalUrl] = useState(sourceUrl || DEFAULT_URL);
   const isAnalyzing = status === "analyzing";
@@ -128,6 +132,16 @@ export function Header({
           <span>
             {status === "idle" ? "Idle" : status === "analyzing" ? "Analyzing" : "Paused"}
           </span>
+        </div>
+
+        {/* Version info */}
+        <div className="flex flex-col items-end gap-0.5">
+          <span className="text-[9px] font-mono text-brand-muted">v{frontendVersion}</span>
+          {backendVersion && backendVersion !== frontendVersion && (
+            <span className="text-[9px] font-mono text-red-400" title={`Frontend v${frontendVersion} / Backend v${backendVersion}`}>
+              API mismatch v{backendVersion}
+            </span>
+          )}
         </div>
       </div>
     </header>
