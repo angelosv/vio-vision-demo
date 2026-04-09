@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from stream_reader import VideoStream
+from audio_analyzer import AudioAnalyzer
 from analyzer import ai_service, detect_objects, frame_to_jpeg_base64
 
 
@@ -93,12 +94,16 @@ async def start_demo(req: StartRequest) -> dict:
         active_stream = stream
         seek_target = None
 
+        # Extract audio for crowd noise analysis (non-blocking fallback)
+        audio = AudioAnalyzer(url)
+
         try:
             await manager.broadcast({
                 "type": "metadata",
                 "fps": stream.fps,
                 "total_frames": stream.total_frames,
                 "duration": stream.duration,
+                "has_audio": audio.available,
             })
 
             FRAME_INTERVAL = 30   # ~1 frame/s at 30fps
@@ -128,12 +133,16 @@ async def start_demo(req: StartRequest) -> dict:
                 if idx % FRAME_INTERVAL == 0:
                     resized = cv2.resize(frame, (640, 360))
 
+                    # ── Crowd noise at this timestamp ──
+                    time_sec = idx / stream.fps
+                    crowd = audio.get_crowd_intensity(time_sec)
+
                     # ── YOLO (every frame, fast) ──
                     detections = detect_objects(resized)
 
-                    # ── AI semantic analysis ──
+                    # ── AI semantic analysis (with audio context) ──
                     if sampled % AI_INTERVAL == 0:
-                        event = ai_service.analyze(resized)
+                        event = ai_service.analyze(resized, crowd_intensity=crowd)
                     else:
                         event = {"event_type": "normal_play", "tension_score": 0,
                                  "description": None, "sentiment": "calm",
@@ -146,6 +155,7 @@ async def start_demo(req: StartRequest) -> dict:
                         "frame_index": idx,
                         "frame_data": f"data:image/jpeg;base64,{frame_b64}",
                         "detections": detections,
+                        "crowd_intensity": crowd,
                         **event,
                     })
 

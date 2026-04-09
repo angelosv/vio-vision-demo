@@ -72,10 +72,14 @@ export default function Page() {
           };
           setEvents((prev) => [event, ...prev].slice(0, 50));
 
-          // Pass frame + detections to VideoPanel
+          // Pass frame + detections + audio to VideoPanel
           if (data.frame_data) {
             window.dispatchEvent(new CustomEvent("vio-frame-update", {
-              detail: { frame: data.frame_data, dets: data.detections ?? [] }
+              detail: {
+                frame: data.frame_data,
+                dets: data.detections ?? [],
+                crowdIntensity: data.crowd_intensity ?? -1,
+              }
             }));
           }
         } else if (data.type === "error") {

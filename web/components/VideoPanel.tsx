@@ -34,13 +34,15 @@ export function VideoPanel({ currentTime, totalTime, onTimeChange, onSeek }: Vid
     "https://images.unsplash.com/photo-1518605368461-1e129623b1bf?auto=format&fit=crop&q=80&w=2000"
   );
   const [detections, setDetections] = useState<Detection[]>([]);
+  const [crowdIntensity, setCrowdIntensity] = useState(-1);
   const progress = totalTime > 0 ? (currentTime / totalTime) * 100 : 0;
 
   useEffect(() => {
     const handleUpdate = (e: any) => {
-      const { frame, dets } = e.detail;
+      const { frame, dets, crowdIntensity: ci } = e.detail;
       if (frame) setFrameSrc(frame);
       if (dets)  setDetections(dets);
+      if (ci !== undefined) setCrowdIntensity(ci);
     };
     window.addEventListener("vio-frame-update", handleUpdate);
     return () => window.removeEventListener("vio-frame-update", handleUpdate);
@@ -112,6 +114,26 @@ export function VideoPanel({ currentTime, totalTime, onTimeChange, onSeek }: Vid
                 {detections.some((d) => d.label === "Ball") ? "✓" : "—"}
               </span>
             </div>
+            {crowdIntensity >= 0 && (
+              <div className="bg-black/60 backdrop-blur border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2">
+                <span className={`text-xs ${crowdIntensity >= 7 ? "text-red-400" : crowdIntensity >= 4 ? "text-yellow-400" : "text-brand-muted"}`}>
+                  Crowd
+                </span>
+                <div className="flex items-center gap-1">
+                  <div className="w-12 h-1.5 bg-brand-border rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all duration-300 ${
+                        crowdIntensity >= 7 ? "bg-red-400" : crowdIntensity >= 4 ? "bg-yellow-400" : "bg-brand-muted"
+                      }`}
+                      style={{ width: `${crowdIntensity * 10}%` }}
+                    />
+                  </div>
+                  <span className="text-xs font-mono w-6 text-right">
+                    {crowdIntensity.toFixed(0)}
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

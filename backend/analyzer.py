@@ -73,9 +73,10 @@ class AIService:
         """Reset temporal context (e.g. on new analysis or seek)."""
         self.event_history = []
 
-    def analyze(self, frame: np.ndarray, teacher_mode: bool = False) -> Dict[str, Any]:
+    def analyze(self, frame: np.ndarray, teacher_mode: bool = False,
+                crowd_intensity: float = -1) -> Dict[str, Any]:
         frame_b64 = frame_to_jpeg_base64(frame)
-        prompt = self._build_prompt()
+        prompt = self._build_prompt(crowd_intensity=crowd_intensity)
 
         if teacher_mode or self.mode == "cloud":
             result = self.call_gpt4o(prompt, frame_b64)
@@ -98,7 +99,7 @@ class AIService:
 
         return result
 
-    def _build_prompt(self) -> str:
+    def _build_prompt(self, crowd_intensity: float = -1) -> str:
         base = (
             "You are an AI sports analyst. Analyze this football match frame and respond ONLY in valid JSON "
             "(no markdown, no explanation):\n"
@@ -110,26 +111,35 @@ class AIService:
             "}"
         )
 
-        if not self.event_history:
-            return base
+        sections: List[str] = [base]
 
-        # Build temporal context from recent events
-        context_lines = []
-        for i, ev in enumerate(self.event_history):
-            desc = ev.get("description") or "—"
-            context_lines.append(
-                f"  {i+1}. [{ev['event_type']}] tension={ev['tension_score']}, "
-                f"sentiment={ev['sentiment']} — {desc}"
+        # Audio context
+        if crowd_intensity >= 0:
+            sections.append(
+                f"AUDIO CONTEXT: Crowd noise intensity is {crowd_intensity}/10 "
+                "(0 = silent, 10 = roaring crowd). "
+                "Use this to inform your tension_score and sentiment — "
+                "high crowd noise often indicates exciting or critical moments."
             )
-        context = "\n".join(context_lines)
 
-        return (
-            f"{base}\n\n"
-            f"MATCH CONTEXT — Recent events (oldest to newest):\n{context}\n\n"
-            "Use this context to maintain narrative continuity. "
-            "Reference what happened before if relevant (e.g. \"after the corner kick...\", "
-            "\"the team continues pressing...\"). Avoid repeating the same description."
-        )
+        # Temporal context from recent events
+        if self.event_history:
+            context_lines = []
+            for i, ev in enumerate(self.event_history):
+                desc = ev.get("description") or "—"
+                context_lines.append(
+                    f"  {i+1}. [{ev['event_type']}] tension={ev['tension_score']}, "
+                    f"sentiment={ev['sentiment']} — {desc}"
+                )
+            context = "\n".join(context_lines)
+            sections.append(
+                f"MATCH CONTEXT — Recent events (oldest to newest):\n{context}\n\n"
+                "Use this context to maintain narrative continuity. "
+                "Reference what happened before if relevant (e.g. \"after the corner kick...\", "
+                "\"the team continues pressing...\"). Avoid repeating the same description."
+            )
+
+        return "\n\n".join(sections)
 
     # ── GPT-4o via Azure OpenAI (multimodal) ──────────────────────────────────
     def call_gpt4o(self, prompt: str, frame_b64: str) -> Dict[str, Any]:
