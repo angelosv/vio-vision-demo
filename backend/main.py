@@ -19,9 +19,11 @@ from pydantic import BaseModel
 from stream_reader import VideoStream
 from audio_analyzer import AudioAnalyzer
 from analyzer import AIService, detect_objects, extract_team_colors, frame_to_jpeg_base64
+from database import Database
+from video_indexer import VideoIndexerClient, VideoIndexerInsights
 
 
-API_VERSION = "0.3.0"
+API_VERSION = "0.4.0"
 
 app = FastAPI(title="Vio Vision Demo Backend", version=API_VERSION)
 
@@ -33,10 +35,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+db = Database()
+
+
+@app.on_event("startup")
+async def startup():
+    await db.init()
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    await db.close()
+
 
 class StartRequest(BaseModel):
     url: str
     ai_mode: str = "cloud"  # "cloud" (GPT-4o Azure) or "local" (Gemma)
+    stream_frames: bool = False  # when False, skip base64 frame encoding (hybrid playback)
 
 
 # ─── Session management ─────────────────────────────────────────────────────
@@ -46,9 +61,10 @@ MAX_CONCURRENT_SESSIONS = 2  # Demo limit: max 2 concurrent analyses
 class AnalysisSession:
     """Encapsulates all state for one analysis run, scoped to its clients."""
 
-    def __init__(self, session_id: str, url: str, ai_mode: str):
+    def __init__(self, session_id: str, url: str, ai_mode: str, stream_frames: bool = False):
         self.id = session_id
         self.url = url
+        self.stream_frames = stream_frames
         self.ai_service = AIService(mode=ai_mode)
         self.stream: Optional[VideoStream] = None
         self.audio: Optional[AudioAnalyzer] = None
@@ -58,6 +74,9 @@ class AnalysisSession:
         self.seek_target: Optional[int] = None
         self.task: Optional[asyncio.Task] = None
         self.clients: Set[WebSocket] = set()
+        # Video Indexer
+        self.indexer_insights: Optional[VideoIndexerInsights] = None
+        self.indexer_task: Optional[asyncio.Task] = None
 
     async def broadcast(self, message: dict) -> None:
         dead: List[WebSocket] = []
@@ -74,6 +93,8 @@ class AnalysisSession:
         self.running.set()  # unblock if paused so the loop can exit
         if self.task and not self.task.done():
             self.task.cancel()
+        if self.indexer_task and not self.indexer_task.done():
+            self.indexer_task.cancel()
         if self.stream:
             self.stream.release()
             self.stream = None
@@ -146,8 +167,9 @@ async def start_demo(req: StartRequest) -> dict:
         )
 
     session_id = uuid.uuid4().hex[:8]
-    session = AnalysisSession(session_id, req.url, req.ai_mode)
+    session = AnalysisSession(session_id, req.url, req.ai_mode, req.stream_frames)
     sessions[session_id] = session
+    await db.create_session(session_id, req.url, req.ai_mode)
     session.task = asyncio.create_task(run_analysis(session))
     return {"status": "started", "url": req.url, "session_id": session_id}
 
@@ -155,6 +177,51 @@ async def start_demo(req: StartRequest) -> dict:
 @app.get("/")
 async def health_check() -> dict:
     return {"status": "ok"}
+
+
+# ─── Session & Event API ────────────────────────────────────────────────────
+
+@app.get("/api/sessions")
+async def list_sessions(limit: int = 50):
+    return await db.get_sessions(limit)
+
+
+@app.get("/api/sessions/{session_id}")
+async def get_session(session_id: str):
+    session = await db.get_session(session_id)
+    if not session:
+        from fastapi import HTTPException
+        raise HTTPException(404, "Session not found")
+    return session
+
+
+@app.get("/api/sessions/{session_id}/events")
+async def get_session_events(session_id: str, event_type: str = None):
+    return await db.get_events(session_id, event_type)
+
+
+@app.get("/api/sessions/{session_id}/export")
+async def export_events(session_id: str, format: str = "json"):
+    if format == "csv":
+        from fastapi.responses import PlainTextResponse
+        csv_data = await db.export_events_csv(session_id)
+        return PlainTextResponse(csv_data, media_type="text/csv")
+    return await db.get_events(session_id)
+
+
+@app.get("/api/sessions/{session_id}/indexer")
+async def get_indexer_insights(session_id: str):
+    """Return Video Indexer insights for an active session."""
+    session = sessions.get(session_id)
+    if session and session.indexer_insights and session.indexer_insights.ready:
+        return {
+            "ready": True,
+            "scoreboard": session.indexer_insights.scoreboard,
+            "transcript_segments": session.indexer_insights.transcript_segments[:50],
+            "scenes": session.indexer_insights.scenes,
+            "faces": [f["name"] for f in session.indexer_insights.faces],
+        }
+    return {"ready": False}
 
 
 @app.websocket("/ws")
@@ -225,6 +292,11 @@ async def run_analysis(session: AnalysisSession) -> None:
             resized_first = cv2.resize(first_frame, (640, 360))
             try:
                 match_info = session.ai_service.identify_match(resized_first)
+                await db.update_session_teams(
+                    session.id,
+                    match_info.get("home_team", "Home"),
+                    match_info.get("away_team", "Away"),
+                )
             except Exception:
                 match_info = {"home_team": "Home", "away_team": "Away"}
 
@@ -237,7 +309,36 @@ async def run_analysis(session: AnalysisSession) -> None:
             "has_audio": audio.available,
             "session_id": session.id,
             "match_info": match_info,
+            "video_url": session.url,
+            "stream_frames": session.stream_frames,
         })
+
+        # Launch Video Indexer in background (non-blocking)
+        indexer = VideoIndexerClient()
+        if indexer.available:
+            video_id = await indexer.submit_video(session.url, name=f"vio-{session.id}")
+            if video_id:
+                async def on_indexer_ready(insights: VideoIndexerInsights):
+                    session.indexer_insights = insights
+                    await session.broadcast({
+                        "type": "indexer_ready",
+                        "scoreboard": insights.scoreboard,
+                        "scenes": insights.scenes,
+                        "transcript_count": len(insights.transcript_segments),
+                    })
+                    if insights.scoreboard:
+                        await db.save_event(session.id, {
+                            "time_sec": 0,
+                            "event_type": "scoreboard_ocr",
+                            "description": (
+                                f"Score: {insights.scoreboard.get('home_score', '?')}"
+                                f"-{insights.scoreboard.get('away_score', '?')}"
+                            ),
+                            "tension_score": 0,
+                        })
+                session.indexer_task = asyncio.create_task(
+                    indexer.poll_and_extract(video_id, on_ready=on_indexer_ready)
+                )
 
         FRAME_INTERVAL = 30
         AI_INTERVAL = 3 if session.ai_service.mode != "local" else 5
@@ -272,33 +373,63 @@ async def run_analysis(session: AnalysisSession) -> None:
                 detections, team_colors = extract_team_colors(resized, detections)
 
                 if sampled % AI_INTERVAL == 0:
-                    event = session.ai_service.analyze(resized, crowd_intensity=crowd)
+                    # Feed transcript context from Video Indexer if available
+                    transcript = None
+                    if session.indexer_insights and session.indexer_insights.ready:
+                        for seg in session.indexer_insights.transcript_segments:
+                            if seg["start_sec"] <= time_sec <= seg["end_sec"]:
+                                transcript = seg["text"]
+                                break
+                    event = session.ai_service.analyze(
+                        resized, crowd_intensity=crowd, transcript=transcript
+                    )
                 else:
                     event = {"event_type": "normal_play", "tension_score": 0,
                              "description": None, "sentiment": "calm",
                              "model_source": session.ai_service.mode}
 
-                # Multi-signal goal confirmation
-                is_confirmed_goal = (
-                    event.get("event_type") in ("goal", "celebration")
-                    and crowd >= 8.0
-                    and event.get("tension_score", 0) >= 8
-                )
-                if is_confirmed_goal:
+                # Multi-signal event confirmation
+                event_type = event.get("event_type", "normal_play")
+                tension = event.get("tension_score", 0)
+
+                # Goal confirmation
+                if event_type in ("goal", "celebration") and crowd >= 8.0 and tension >= 8:
                     event["event_type"] = "goal"
                     event["confirmed_goal"] = True
 
-                frame_b64 = frame_to_jpeg_base64(resized)
+                # Card confirmation
+                if event_type in ("yellow_card", "red_card") and tension >= 5:
+                    event["confirmed_card"] = True
 
-                await session.broadcast({
+                # Penalty confirmation
+                if event_type == "penalty" and tension >= 7:
+                    event["confirmed_penalty"] = True
+
+                payload = {
                     "type": "event",
                     "frame_index": idx,
-                    "frame_data": f"data:image/jpeg;base64,{frame_b64}",
+                    "time_sec": time_sec,
                     "detections": detections,
                     "team_colors": team_colors,
                     "crowd_intensity": crowd,
                     **event,
-                })
+                }
+                if session.stream_frames:
+                    frame_b64 = frame_to_jpeg_base64(resized)
+                    payload["frame_data"] = f"data:image/jpeg;base64,{frame_b64}"
+
+                await session.broadcast(payload)
+
+                # Persist non-trivial events to SQLite
+                evt_type = event.get("event_type", "normal_play")
+                if evt_type != "normal_play" or event.get("tension_score", 0) >= 3:
+                    await db.save_event(session.id, {
+                        "time_sec": time_sec,
+                        "frame_index": idx,
+                        "detections": detections,
+                        "crowd_intensity": crowd,
+                        **event,
+                    })
 
                 sampled += 1
 
@@ -310,7 +441,9 @@ async def run_analysis(session: AnalysisSession) -> None:
     except Exception as e:
         await session.broadcast({"type": "error", "message": str(e)})
     finally:
+        duration = session.stream.duration if session.stream else 0
         if session.stream:
             session.stream.release()
             session.stream = None
+        await db.end_session(session.id, duration)
         sessions.pop(session.id, None)

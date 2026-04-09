@@ -11,6 +11,9 @@ interface EventsSidebarProps {
 const CATEGORY_FILTERS: { label: string; value: EventCategory | "all" }[] = [
   { label: "All", value: "all" },
   { label: "Critical", value: "critical" },
+  { label: "Cards", value: "card" },
+  { label: "Fouls", value: "foul" },
+  { label: "Set Pieces", value: "set_piece" },
   { label: "Key", value: "key_action" },
   { label: "Match", value: "match" },
   { label: "Polls", value: "poll" },
