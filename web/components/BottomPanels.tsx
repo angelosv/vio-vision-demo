@@ -6,9 +6,10 @@ import type { Detection, TensionPoint } from "@/types/events";
 interface BottomPanelsProps {
   detections: Detection[];
   tensionHistory: TensionPoint[];
+  teamColors?: string[];
 }
 
-export function BottomPanels({ detections, tensionHistory }: BottomPanelsProps) {
+export function BottomPanels({ detections, tensionHistory, teamColors = [] }: BottomPanelsProps) {
   const [pitchOpen, setPitchOpen] = useState(true);
   const [momentumOpen, setMomentumOpen] = useState(true);
 
@@ -43,14 +44,26 @@ export function BottomPanels({ detections, tensionHistory }: BottomPanelsProps) 
               <div className="absolute top-1/4 left-0 w-[12%] h-1/2 border-r border-t border-b border-white/15 rounded-r" />
               <div className="absolute top-1/4 right-0 w-[12%] h-1/2 border-l border-t border-b border-white/15 rounded-l" />
 
-              {/* Player dots */}
-              {players.map((p, i) => (
-                <div
-                  key={i}
-                  className="absolute w-2 h-2 rounded-full bg-brand-accent/80 border border-brand-accent"
-                  style={{ left: `${centerX(p) * 100}%`, top: `${centerY(p) * 100}%`, transform: "translate(-50%,-50%)" }}
-                />
-              ))}
+              {/* Player dots — coloured by team */}
+              {players.map((p, i) => {
+                const dotColor = p.team !== undefined && teamColors[p.team]
+                  ? teamColors[p.team]
+                  : "#FE9330";
+                return (
+                  <div
+                    key={i}
+                    className="absolute w-2.5 h-2.5 rounded-full border"
+                    style={{
+                      left: `${centerX(p) * 100}%`,
+                      top: `${centerY(p) * 100}%`,
+                      transform: "translate(-50%,-50%)",
+                      backgroundColor: dotColor,
+                      borderColor: dotColor,
+                      boxShadow: `0 0 4px ${dotColor}88`,
+                    }}
+                  />
+                );
+              })}
 
               {/* Ball */}
               {ball && (

@@ -16,6 +16,7 @@ export default function Page() {
   const [events, setEvents] = useState<MatchEvent[]>([]);
   const [totalTime, setTotalTime] = useState(90 * 60);
   const [detections, setDetections] = useState<Detection[]>([]);
+  const [teamColors, setTeamColors] = useState<string[]>([]);
   const [tensionHistory, setTensionHistory] = useState<TensionPoint[]>([]);
   const [alert, setAlert] = useState<MatchEvent | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -79,8 +80,9 @@ export default function Page() {
           lastFrameTimeRef.current = frameTime;
           lastFrameArrivalRef.current = Date.now();
 
-          // Store detections for BottomPanels
+          // Store detections + team colors for BottomPanels
           setDetections(data.detections ?? []);
+          if (data.team_colors) setTeamColors(data.team_colors);
 
           // Build event
           const tensionScore = data.tension_score ?? 0;
@@ -102,18 +104,34 @@ export default function Page() {
             });
           }
 
-          // Alert for critical events (tension >= 8)
-          if (tensionScore >= 8) {
+          // Alert for critical events (tension >= 8) or confirmed goals
+          if (data.confirmed_goal || tensionScore >= 8) {
             setAlert(event);
           }
 
-          // Pass frame + detections + audio to VideoPanel
+          // Create engagement event if present
+          if (data.engagement?.type && data.engagement?.text) {
+            const engCategory =
+              data.engagement.type === "poll" ? "poll" as const :
+              data.engagement.type === "sentiment" ? "sentiment_prompt" as const :
+              "product" as const;
+            const engEvent: MatchEvent = {
+              id: `eng-${data.frame_index ?? Date.now()}`,
+              timestamp: formatTime(frameRef.current, fpsRef.current),
+              title: data.engagement.text,
+              category: engCategory,
+            };
+            setEvents((prev) => [engEvent, ...prev].slice(0, 100));
+          }
+
+          // Pass frame + detections + audio + team colors to VideoPanel
           if (data.frame_data) {
             window.dispatchEvent(new CustomEvent("vio-frame-update", {
               detail: {
                 frame: data.frame_data,
                 dets: data.detections ?? [],
                 crowdIntensity: data.crowd_intensity ?? -1,
+                teamColors: data.team_colors ?? [],
               }
             }));
           }
@@ -183,6 +201,7 @@ export default function Page() {
 
     setEvents([]);
     setDetections([]);
+    setTeamColors([]);
     setTensionHistory([]);
     setAlert(null);
     frameRef.current = 0;
@@ -260,7 +279,7 @@ export default function Page() {
             onTimeChange={setCurrentTime}
             onSeek={handleSeek}
           />
-          <BottomPanels detections={detections} tensionHistory={tensionHistory} />
+          <BottomPanels detections={detections} tensionHistory={tensionHistory} teamColors={teamColors} />
         </div>
 
         <EventsSidebar events={events} />

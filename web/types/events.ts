@@ -2,9 +2,13 @@ export interface Detection {
   label: string;
   confidence: number;
   box: [number, number, number, number]; // [x1, y1, x2, y2] normalized 0–1
+  color?: string;  // hex jersey color
+  team?: number;   // 0 or 1
 }
 
-export type EventCategory = "match" | "key_action" | "critical" | "system";
+export type EventCategory =
+  | "match" | "key_action" | "critical" | "system"
+  | "poll" | "sentiment_prompt" | "product";
 
 export interface MatchEvent {
   id: string;

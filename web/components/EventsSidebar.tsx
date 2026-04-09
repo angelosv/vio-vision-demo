@@ -13,6 +13,9 @@ const CATEGORY_FILTERS: { label: string; value: EventCategory | "all" }[] = [
   { label: "Critical", value: "critical" },
   { label: "Key", value: "key_action" },
   { label: "Match", value: "match" },
+  { label: "Polls", value: "poll" },
+  { label: "Sentiment", value: "sentiment_prompt" },
+  { label: "Product", value: "product" },
   { label: "System", value: "system" },
 ];
 
