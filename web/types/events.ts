@@ -12,37 +12,10 @@ export interface MatchEvent {
   title: string;
   description?: string;
   category: EventCategory;
+  tensionScore?: number;
 }
 
-export const demoEvents: MatchEvent[] = [
-  {
-    id: "1",
-    timestamp: "65:12",
-    title: "High Press",
-    description:
-      "Aggressive pressing sequence initiated in the attacking third. 4 players involved.",
-    category: "match",
-  },
-  {
-    id: "2",
-    timestamp: "62:45",
-    title: "Ball in Box",
-    description: "Cross from right flank. Defensive clearance successful.",
-    category: "key_action",
-  },
-  {
-    id: "3",
-    timestamp: "58:20",
-    title: "Goal Opportunity",
-    description:
-      "Shot on target from outside the penalty area. xG: 0.14.",
-    category: "critical",
-  },
-  {
-    id: "4",
-    timestamp: "45:00",
-    title: "Second Half Start",
-    description: undefined,
-    category: "system",
-  },
-];
+export interface TensionPoint {
+  time: number;  // seconds
+  score: number; // 0–10
+}

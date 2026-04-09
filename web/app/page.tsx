@@ -5,7 +5,8 @@ import { Header, AIMode } from "@/components/Header";
 import { VideoPanel } from "@/components/VideoPanel";
 import { BottomPanels } from "@/components/BottomPanels";
 import { EventsSidebar } from "@/components/EventsSidebar";
-import type { MatchEvent } from "@/types/events";
+import { AlertBanner } from "@/components/AlertBanner";
+import type { MatchEvent, Detection, TensionPoint } from "@/types/events";
 
 export default function Page() {
   const [status, setStatus] = useState<"idle" | "analyzing" | "paused">("idle");
@@ -14,6 +15,9 @@ export default function Page() {
   const [currentTime, setCurrentTime] = useState(0);
   const [events, setEvents] = useState<MatchEvent[]>([]);
   const [totalTime, setTotalTime] = useState(90 * 60);
+  const [detections, setDetections] = useState<Detection[]>([]);
+  const [tensionHistory, setTensionHistory] = useState<TensionPoint[]>([]);
+  const [alert, setAlert] = useState<MatchEvent | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const frameRef = useRef(0);
@@ -56,7 +60,6 @@ export default function Page() {
     wsRef.current = ws;
 
     ws.onopen = () => {
-      // Re-join session if we had one (reconnect scenario)
       if (sessionIdRef.current) {
         ws.send(JSON.stringify({ type: "join", session_id: sessionIdRef.current }));
       }
@@ -76,15 +79,35 @@ export default function Page() {
           lastFrameTimeRef.current = frameTime;
           lastFrameArrivalRef.current = Date.now();
 
+          // Store detections for BottomPanels
+          setDetections(data.detections ?? []);
+
+          // Build event
+          const tensionScore = data.tension_score ?? 0;
           const event: MatchEvent = {
             id: String(data.frame_index ?? Date.now()),
             timestamp: formatTime(frameRef.current, fpsRef.current),
             title: data.event_type ?? "Event",
             description: data.description ?? data.raw_model_output?.slice(0, 120),
             category: mapCategory(data.event_type),
+            tensionScore,
           };
-          setEvents((prev) => [event, ...prev].slice(0, 50));
+          setEvents((prev) => [event, ...prev].slice(0, 100));
 
+          // Track tension for momentum chart
+          if (tensionScore > 0 || data.event_type !== "normal_play") {
+            setTensionHistory((prev) => {
+              const point: TensionPoint = { time: frameTime, score: tensionScore };
+              return [...prev, point].slice(-120);
+            });
+          }
+
+          // Alert for critical events (tension >= 8)
+          if (tensionScore >= 8) {
+            setAlert(event);
+          }
+
+          // Pass frame + detections + audio to VideoPanel
           if (data.frame_data) {
             window.dispatchEvent(new CustomEvent("vio-frame-update", {
               detail: {
@@ -114,7 +137,6 @@ export default function Page() {
   useEffect(() => {
     connectWS();
 
-    // Stop session when the user leaves/closes the page
     const handleUnload = () => {
       if (sessionIdRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: "stop" }));
@@ -124,7 +146,6 @@ export default function Page() {
 
     return () => {
       window.removeEventListener("beforeunload", handleUnload);
-      // Send stop on React unmount as well
       if (sessionIdRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: "stop" }));
       }
@@ -133,7 +154,7 @@ export default function Page() {
     };
   }, [connectWS]);
 
-  // Smooth progress bar: interpolate between frame events
+  // Smooth progress bar
   useEffect(() => {
     if (status !== "analyzing") {
       cancelAnimationFrame(animFrameRef.current);
@@ -155,13 +176,15 @@ export default function Page() {
     const effectiveUrl = url ?? sourceUrl;
     if (!effectiveUrl) return;
 
-    // Stop previous session if any
     if (sessionIdRef.current) {
       sendWsCommand("stop");
       sessionIdRef.current = null;
     }
 
     setEvents([]);
+    setDetections([]);
+    setTensionHistory([]);
+    setAlert(null);
     frameRef.current = 0;
     fpsRef.current = 25;
     setCurrentTime(0);
@@ -178,7 +201,6 @@ export default function Page() {
       });
       const body = await res.json();
       sessionIdRef.current = body.session_id;
-      // Subscribe this WebSocket to the new session
       sendWsCommand("join", { session_id: body.session_id });
     } catch (e) {
       console.error("Failed to start:", e);
@@ -194,7 +216,6 @@ export default function Page() {
     setStatus("idle");
   };
 
-  // Seek: tell backend to jump to a specific time in the video
   const handleSeek = (time: number) => {
     lastFrameTimeRef.current = time;
     lastFrameArrivalRef.current = Date.now();
@@ -229,6 +250,8 @@ export default function Page() {
         onAIModeChange={setAiMode}
       />
 
+      <AlertBanner event={alert} onDismiss={() => setAlert(null)} />
+
       <main className="flex-1 flex overflow-hidden p-4 gap-4">
         <div className="flex-1 flex flex-col gap-4 min-w-0">
           <VideoPanel
@@ -237,7 +260,7 @@ export default function Page() {
             onTimeChange={setCurrentTime}
             onSeek={handleSeek}
           />
-          <BottomPanels />
+          <BottomPanels detections={detections} tensionHistory={tensionHistory} />
         </div>
 
         <EventsSidebar events={events} />
