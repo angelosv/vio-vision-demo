@@ -8,6 +8,8 @@ import { EventsSidebar } from "@/components/EventsSidebar";
 import { AlertBanner } from "@/components/AlertBanner";
 import type { MatchEvent, Detection, TensionPoint } from "@/types/events";
 
+const API_VERSION = "0.3.0";
+
 export default function Page() {
   const [status, setStatus] = useState<"idle" | "analyzing" | "paused">("idle");
   const [sourceUrl, setSourceUrl] = useState("");
@@ -20,6 +22,7 @@ export default function Page() {
   const [tensionHistory, setTensionHistory] = useState<TensionPoint[]>([]);
   const [ballHistory, setBallHistory] = useState<{ x: number; y: number }[]>([]);
   const [alert, setAlert] = useState<MatchEvent | null>(null);
+  const [backendVersion, setBackendVersion] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const frameRef = useRef(0);
@@ -72,6 +75,7 @@ export default function Page() {
         const data = JSON.parse(msg.data);
         if (data.type === "metadata") {
           fpsRef.current = data.fps || 25;
+          if (data.api_version) setBackendVersion(data.api_version);
           if (data.duration > 0) {
             setTotalTime(Math.floor(data.duration));
           }
@@ -277,6 +281,8 @@ export default function Page() {
         onSourceUrlChange={setSourceUrl}
         aiMode={aiMode}
         onAIModeChange={setAiMode}
+        frontendVersion={API_VERSION}
+        backendVersion={backendVersion}
       />
 
       <AlertBanner event={alert} onDismiss={() => setAlert(null)} />
