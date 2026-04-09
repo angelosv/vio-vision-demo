@@ -23,3 +23,21 @@ export interface TensionPoint {
   time: number;  // seconds
   score: number; // 0–10
 }
+
+export interface SmartPoll {
+  poll_id: string;
+  question: string;
+  options: string[];
+  duration: number; // seconds
+}
+
+export interface HighlightMoment {
+  id: string;
+  timeSec: number;
+  timestamp: string; // "MM:SS"
+  eventType: string;
+  description: string;
+  tensionScore: number;
+  category: EventCategory;
+  confirmed?: boolean;
+}
