@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from stream_reader import VideoStream
 from audio_analyzer import AudioAnalyzer
-from analyzer import AIService, detect_objects, extract_team_colors, frame_to_jpeg_base64
+from analyzer import AIService, PlayerTracker, detect_objects, extract_team_colors, frame_to_jpeg_base64
 from database import Database
 from video_indexer import VideoIndexerClient, VideoIndexerInsights
 
@@ -64,6 +64,7 @@ class AnalysisSession:
         self.url = url
         self.stream_frames = stream_frames
         self.ai_service = AIService(mode=ai_mode)
+        self.player_tracker = PlayerTracker()
         self.stream: Optional[VideoStream] = None
         self.audio: Optional[AudioAnalyzer] = None
         self.running = asyncio.Event()
@@ -349,6 +350,7 @@ async def run_analysis(session: AnalysisSession) -> None:
                 idx = target
                 sampled = 0
                 session.ai_service.clear_history()
+                session.player_tracker.reset()
 
             ret, frame = stream.read()
             if not ret:
@@ -362,6 +364,7 @@ async def run_analysis(session: AnalysisSession) -> None:
 
                 detections = detect_objects(resized)
                 detections, team_colors = extract_team_colors(resized, detections)
+                detections = session.player_tracker.update(detections)
 
                 if sampled % AI_INTERVAL == 0:
                     # Feed transcript context from Video Indexer if available

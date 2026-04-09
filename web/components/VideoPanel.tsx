@@ -21,6 +21,7 @@ interface VideoPanelProps {
   scoreboard?: { home_team?: string; away_team?: string; home_score: number; away_score: number } | null;
   sceneMarkers?: { start_sec: number }[];
   highlightMarkers?: { timeSec: number; category: string }[];
+  sentiment?: string | null; // "calm" | "tense" | "euphoric" | "frustrated"
 }
 
 function formatTime(seconds: number): string {
@@ -29,12 +30,34 @@ function formatTime(seconds: number): string {
   return `${m}:${s}`;
 }
 
-function labelColor(label: string): { border: string; bg: string; text: string } {
-  const l = label.toLowerCase();
+function labelColor(det: Detection): { border: string; bg: string; text: string } {
+  const l = det.label.toLowerCase();
   if (l === "ball") return { border: "#ffffff", bg: "#ffffff", text: "#000" };
   if (l === "gk") return { border: "#facc15", bg: "#facc15", text: "#000" };
+  if (l === "referee") return { border: "#f472b6", bg: "#f472b6", text: "#000" };
+  if (l === "crowd") return { border: "#6b7280", bg: "#6b7280", text: "#fff" };
+  // Use team color if available
+  if (det.color) return { border: det.color, bg: det.color, text: "#000" };
+  if (det.team === 0) return { border: "#FE9330", bg: "#FE9330", text: "#000" };
+  if (det.team === 1) return { border: "#2C7A94", bg: "#2C7A94", text: "#fff" };
   return { border: "#FE9330", bg: "#FE9330", text: "#000" };
 }
+
+function detectionLabel(det: Detection): string {
+  if (det.label === "Crowd") return "";
+  const base = det.label;
+  if (det.player_id && det.label !== "Ball") {
+    return `#${det.player_id} ${base}`;
+  }
+  return base;
+}
+
+const SENTIMENT_CONFIG: Record<string, { emoji: string; color: string; label: string }> = {
+  calm: { emoji: "😌", color: "text-blue-400", label: "Calm" },
+  tense: { emoji: "😰", color: "text-yellow-400", label: "Tense" },
+  euphoric: { emoji: "🤩", color: "text-green-400", label: "Euphoric" },
+  frustrated: { emoji: "😤", color: "text-red-400", label: "Frustrated" },
+};
 
 /** Find nearest detection frame within tolerance. */
 function findNearest(
@@ -66,6 +89,7 @@ export function VideoPanel({
   scoreboard,
   sceneMarkers,
   highlightMarkers,
+  sentiment,
 }: VideoPanelProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [frameSrc, setFrameSrc] = useState(
@@ -76,10 +100,50 @@ export function VideoPanel({
   const [muted, setMuted] = useState(true);
   const [videoDuration, setVideoDuration] = useState(0);
 
+  // Interpolation: store previous + current detection frames for lerp
+  const prevDetectionsRef = useRef<{ time: number; dets: Detection[] }>({ time: 0, dets: [] });
+  const currDetectionsRef = useRef<{ time: number; dets: Detection[] }>({ time: 0, dets: [] });
+  const [interpolatedDets, setInterpolatedDets] = useState<Detection[]>([]);
+
   const isNative = !!videoUrl;
   const effectiveDuration = isNative && videoDuration > 0 ? videoDuration : totalTime;
   const effectiveTime = isNative && videoRef.current ? videoRef.current.currentTime : currentTime;
   const progress = effectiveDuration > 0 ? (effectiveTime / effectiveDuration) * 100 : 0;
+
+  // Interpolate bounding boxes between two detection frames
+  const interpolateDetections = useCallback((t: number) => {
+    const prev = prevDetectionsRef.current;
+    const curr = currDetectionsRef.current;
+    if (!curr.dets.length) return;
+
+    const span = curr.time - prev.time;
+    if (span <= 0 || t <= prev.time) {
+      setInterpolatedDets(curr.dets);
+      return;
+    }
+
+    const alpha = Math.min(1, (t - prev.time) / span);
+    const result: Detection[] = curr.dets.map((det) => {
+      // Find matching previous detection by player_id or nearest position
+      const prevDet = det.player_id
+        ? prev.dets.find((p) => p.player_id === det.player_id)
+        : null;
+      if (!prevDet) return det;
+
+      const [x1, y1, x2, y2] = det.box;
+      const [px1, py1, px2, py2] = prevDet.box;
+      return {
+        ...det,
+        box: [
+          px1 + (x1 - px1) * alpha,
+          py1 + (y1 - py1) * alpha,
+          px2 + (x2 - px2) * alpha,
+          py2 + (y2 - py2) * alpha,
+        ] as [number, number, number, number],
+      };
+    });
+    setInterpolatedDets(result);
+  }, []);
 
   // Legacy mode: listen for frame updates via CustomEvent
   useEffect(() => {
@@ -87,14 +151,18 @@ export function VideoPanel({
     const handleUpdate = (e: any) => {
       const { frame, dets, crowdIntensity: ci } = e.detail;
       if (frame) setFrameSrc(frame);
-      if (dets) setDetections(dets);
+      if (dets) {
+        prevDetectionsRef.current = currDetectionsRef.current;
+        currDetectionsRef.current = { time: Date.now() / 1000, dets };
+        setDetections(dets);
+      }
       if (ci !== undefined) setCrowdIntensity(ci);
     };
     window.addEventListener("vio-frame-update", handleUpdate);
     return () => window.removeEventListener("vio-frame-update", handleUpdate);
   }, [isNative]);
 
-  // Native mode: sync detections from buffer on video timeupdate
+  // Native mode: sync detections from buffer on video timeupdate + interpolate
   const handleTimeUpdate = useCallback(() => {
     if (!videoRef.current || !detectionBuffer) return;
     const t = videoRef.current.currentTime;
@@ -104,10 +172,16 @@ export function VideoPanel({
     const frame =
       detectionBuffer.get(quantized) ?? findNearest(detectionBuffer, quantized, 0.5);
     if (frame) {
-      setDetections(frame.detections);
+      // Check if this is a new detection frame
+      if (frame.detections !== currDetectionsRef.current.dets) {
+        prevDetectionsRef.current = currDetectionsRef.current;
+        currDetectionsRef.current = { time: t, dets: frame.detections };
+        setDetections(frame.detections);
+      }
       setCrowdIntensity(frame.crowdIntensity);
+      interpolateDetections(t);
     }
-  }, [detectionBuffer, onTimeChange]);
+  }, [detectionBuffer, onTimeChange, interpolateDetections]);
 
   const handleMetadataLoaded = () => {
     if (videoRef.current) {
@@ -168,14 +242,17 @@ export function VideoPanel({
             />
           )}
 
-          {/* YOLO detections overlay */}
-          {detections.map((det, i) => {
+          {/* YOLO detections overlay (interpolated for smooth tracking) */}
+          {(isNative && interpolatedDets.length ? interpolatedDets : detections)
+            .filter((det) => det.label !== "Crowd")
+            .map((det, i) => {
             const [x1, y1, x2, y2] = det.box;
-            const color = labelColor(det.label);
+            const color = labelColor(det);
+            const label = detectionLabel(det);
             return (
               <div
-                key={i}
-                className="absolute pointer-events-none"
+                key={det.player_id ?? i}
+                className="absolute pointer-events-none transition-all duration-150 ease-linear"
                 style={{
                   left: `${x1 * 100}%`,
                   top: `${y1 * 100}%`,
@@ -183,15 +260,17 @@ export function VideoPanel({
                   height: `${(y2 - y1) * 100}%`,
                   border: `2px solid ${color.border}`,
                   borderRadius: "3px",
-                  boxShadow: `0 0 8px ${color.border}88`,
+                  boxShadow: `0 0 6px ${color.border}66`,
                 }}
               >
-                <span
-                  className="absolute -top-5 left-0 text-[9px] font-bold px-1 py-0.5 rounded-sm whitespace-nowrap"
-                  style={{ background: color.bg, color: color.text }}
-                >
-                  {det.label} {Math.round(det.confidence * 100)}%
-                </span>
+                {label && (
+                  <span
+                    className="absolute -top-5 left-0 text-[8px] font-bold px-1 py-0.5 rounded-sm whitespace-nowrap"
+                    style={{ background: color.bg, color: color.text }}
+                  >
+                    {label}
+                  </span>
+                )}
               </div>
             );
           })}
@@ -208,26 +287,32 @@ export function VideoPanel({
           )}
 
           {/* Metrics overlay */}
-          <div className="absolute top-4 left-4 flex gap-2">
-            <div className="bg-black/60 backdrop-blur border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2">
-              <span className="text-brand-primary text-xs">Objects</span>
-              <span className="text-xs font-mono">{detections.length}</span>
-            </div>
+          <div className="absolute top-4 left-4 flex gap-2 flex-wrap">
             <div className="bg-black/60 backdrop-blur border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2">
               <span className="text-brand-success text-xs">Players</span>
               <span className="text-xs font-mono">
                 {detections.filter((d) => d.label === "Player" || d.label === "GK").length}
               </span>
             </div>
+            {detections.some((d) => d.label === "Referee") && (
+              <div className="bg-black/60 backdrop-blur border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2">
+                <span className="text-pink-400 text-xs">Refs</span>
+                <span className="text-xs font-mono">
+                  {detections.filter((d) => d.label === "Referee").length}
+                </span>
+              </div>
+            )}
             <div className="bg-black/60 backdrop-blur border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2">
               <span className="text-brand-accent text-xs">Ball</span>
               <span className="text-xs font-mono">
                 {detections.some((d) => d.label === "Ball") ? "Y" : "-"}
               </span>
             </div>
-            {isNative && (
+            {sentiment && SENTIMENT_CONFIG[sentiment] && (
               <div className="bg-black/60 backdrop-blur border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2">
-                <span className="text-green-400 text-xs">Native</span>
+                <span className={`text-xs ${SENTIMENT_CONFIG[sentiment].color}`}>
+                  {SENTIMENT_CONFIG[sentiment].emoji} {SENTIMENT_CONFIG[sentiment].label}
+                </span>
               </div>
             )}
             {crowdIntensity >= 0 && (

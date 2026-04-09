@@ -39,6 +39,8 @@ export default function Page() {
   // Highlight Reel
   const [highlights, setHighlights] = useState<HighlightMoment[]>([]);
   const [showHighlightReel, setShowHighlightReel] = useState(false);
+  // Sentiment
+  const [sentiment, setSentiment] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -140,6 +142,7 @@ export default function Page() {
 
           // Build event
           const tensionScore = data.tension_score ?? 0;
+          if (data.sentiment) setSentiment(data.sentiment);
           const event: MatchEvent = {
             id: String(data.frame_index ?? Date.now()),
             timestamp: formatTime(frameRef.current, fpsRef.current),
@@ -301,6 +304,7 @@ export default function Page() {
     triggeredPollsRef.current.clear();
     setHighlights([]);
     setShowHighlightReel(false);
+    setSentiment(null);
     detectionBufferRef.current.clear();
     frameRef.current = 0;
     fpsRef.current = 25;
@@ -392,6 +396,7 @@ export default function Page() {
               scoreboard={scoreboard}
               sceneMarkers={sceneMarkers}
               highlightMarkers={highlights.map((h) => ({ timeSec: h.timeSec, category: h.category }))}
+              sentiment={sentiment}
             />
             <SmartPollOverlay poll={activePoll} onDismiss={() => setActivePoll(null)} />
           </div>
