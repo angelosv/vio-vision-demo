@@ -20,7 +20,7 @@ spec:
       - name: reachuqa2
       containers:
       - name: web
-        image: reachuqa2.azurecr.io/vio-vision-web:demo-v5
+        image: reachuqa2.azurecr.io/vio-vision-web:v0.4.0
         ports:
         - containerPort: 3000
           name: http

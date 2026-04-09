@@ -20,13 +20,56 @@ spec:
       - name: reachuqa2
       containers:
       - name: backend
-        image: reachuqa2.azurecr.io/vio-vision-backend:demo-v5
+        image: reachuqa2.azurecr.io/vio-vision-backend:v0.4.0
         ports:
         - containerPort: 8000
           name: http
         env:
         - name: PORT
           value: "8000"
+        - name: AI_MODE
+          value: "cloud"
+        # Azure OpenAI
+        - name: AZURE_OPENAI_ENDPOINT
+          valueFrom:
+            secretKeyRef:
+              name: vio-openai-secret
+              key: AZURE_OPENAI_ENDPOINT
+              optional: true
+        - name: AZURE_OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: vio-openai-secret
+              key: AZURE_OPENAI_API_KEY
+              optional: true
+        - name: AZURE_OPENAI_DEPLOYMENT
+          value: "gpt-4o"
+        - name: AZURE_OPENAI_API_VERSION
+          value: "2024-12-01-preview"
+        # Gemma (local GPU fallback)
+        - name: GEMMA_ENDPOINT
+          value: "http://100.99.128.76:11434/v1/chat/completions"
+        - name: GEMMA_MODEL
+          value: "gemma4:26b"
+        # Azure Video Indexer (optional)
+        - name: AZURE_VIDEO_INDEXER_ACCOUNT_ID
+          valueFrom:
+            secretKeyRef:
+              name: vio-video-indexer
+              key: AZURE_VIDEO_INDEXER_ACCOUNT_ID
+              optional: true
+        - name: AZURE_VIDEO_INDEXER_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: vio-video-indexer
+              key: AZURE_VIDEO_INDEXER_API_KEY
+              optional: true
+        - name: AZURE_VIDEO_INDEXER_LOCATION
+          valueFrom:
+            secretKeyRef:
+              name: vio-video-indexer
+              key: AZURE_VIDEO_INDEXER_LOCATION
+              optional: true
         resources:
           requests:
             memory: "512Mi"
