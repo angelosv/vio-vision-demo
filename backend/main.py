@@ -23,7 +23,7 @@ from database import Database
 from video_indexer import VideoIndexerClient, VideoIndexerInsights
 
 
-API_VERSION = "0.4.0"
+API_VERSION = "0.4.1"
 
 app = FastAPI(title="Vio Vision Demo Backend", version=API_VERSION)
 
