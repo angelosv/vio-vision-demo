@@ -12,7 +12,7 @@ except ImportError:
     pass  # dotenv optional — env vars can be set externally
 
 import cv2
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -38,6 +38,8 @@ class StartRequest(BaseModel):
 
 
 # ─── Session management ─────────────────────────────────────────────────────
+
+MAX_CONCURRENT_SESSIONS = 2  # Demo limit: max 2 concurrent analyses
 
 class AnalysisSession:
     """Encapsulates all state for one analysis run, scoped to its clients."""
@@ -134,6 +136,13 @@ async def root() -> dict:
 @app.post("/api/start")
 async def start_demo(req: StartRequest) -> dict:
     """Start a new analysis session and return its ID."""
+    # Enforce concurrent session limit
+    if len(sessions) >= MAX_CONCURRENT_SESSIONS:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Maximum concurrent sessions ({MAX_CONCURRENT_SESSIONS}) reached. Please wait for other analyses to complete."
+        )
+
     session_id = uuid.uuid4().hex[:8]
     session = AnalysisSession(session_id, req.url, req.ai_mode)
     sessions[session_id] = session
