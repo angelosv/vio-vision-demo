@@ -1,7 +1,8 @@
 import asyncio
 import json
 import os
-from typing import List, Optional
+import uuid
+from typing import Dict, List, Optional, Set
 
 # Load .env if present
 try:
@@ -17,7 +18,7 @@ from pydantic import BaseModel
 
 from stream_reader import VideoStream
 from audio_analyzer import AudioAnalyzer
-from analyzer import ai_service, detect_objects, frame_to_jpeg_base64
+from analyzer import AIService, detect_objects, frame_to_jpeg_base64
 
 
 app = FastAPI(title="Vio Vision Demo Backend")
@@ -36,9 +37,52 @@ class StartRequest(BaseModel):
     ai_mode: str = "cloud"  # "cloud" (GPT-4o Azure) or "local" (Gemma)
 
 
+# ─── Session management ─────────────────────────────────────────────────────
+
+class AnalysisSession:
+    """Encapsulates all state for one analysis run, scoped to its clients."""
+
+    def __init__(self, session_id: str, url: str, ai_mode: str):
+        self.id = session_id
+        self.url = url
+        self.ai_service = AIService(mode=ai_mode)
+        self.stream: Optional[VideoStream] = None
+        self.audio: Optional[AudioAnalyzer] = None
+        self.running = asyncio.Event()
+        self.running.set()
+        self.cancelled = False
+        self.seek_target: Optional[int] = None
+        self.task: Optional[asyncio.Task] = None
+        self.clients: Set[WebSocket] = set()
+
+    async def broadcast(self, message: dict) -> None:
+        dead: List[WebSocket] = []
+        for ws in self.clients:
+            try:
+                await ws.send_json(message)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.clients.discard(ws)
+
+    def cancel(self) -> None:
+        self.cancelled = True
+        self.running.set()  # unblock if paused so the loop can exit
+        if self.task and not self.task.done():
+            self.task.cancel()
+        if self.stream:
+            self.stream.release()
+            self.stream = None
+
+
+sessions: Dict[str, AnalysisSession] = {}
+
+
 class ConnectionManager:
     def __init__(self) -> None:
         self.active_connections: List[WebSocket] = []
+        # Track which session each WebSocket belongs to
+        self.ws_session: Dict[int, str] = {}  # id(ws) -> session_id
 
     async def connect(self, websocket: WebSocket) -> None:
         await websocket.accept()
@@ -47,31 +91,40 @@ class ConnectionManager:
     def disconnect(self, websocket: WebSocket) -> None:
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
+        # Remove from its session; cancel session if no clients left
+        session_id = self.ws_session.pop(id(websocket), None)
+        if session_id and session_id in sessions:
+            session = sessions[session_id]
+            session.clients.discard(websocket)
+            if not session.clients:
+                session.cancel()
+                sessions.pop(session_id, None)
 
-    async def broadcast(self, message: dict) -> None:
-        dead: List[WebSocket] = []
-        for connection in self.active_connections:
-            try:
-                await connection.send_json(message)
-            except WebSocketDisconnect:
-                dead.append(connection)
-            except Exception:
-                dead.append(connection)
-        for d in dead:
-            self.disconnect(d)
+    def join_session(self, websocket: WebSocket, session_id: str) -> None:
+        # Leave previous session if any
+        old_id = self.ws_session.get(id(websocket))
+        if old_id and old_id != session_id and old_id in sessions:
+            old_session = sessions[old_id]
+            old_session.clients.discard(websocket)
+            if not old_session.clients:
+                old_session.cancel()
+                sessions.pop(old_id, None)
+        # Join new session
+        self.ws_session[id(websocket)] = session_id
+        if session_id in sessions:
+            sessions[session_id].clients.add(websocket)
+
+    def get_session(self, websocket: WebSocket) -> Optional[AnalysisSession]:
+        session_id = self.ws_session.get(id(websocket))
+        if session_id:
+            return sessions.get(session_id)
+        return None
 
 
 manager = ConnectionManager()
 
-# Controls whether the analysis loop is running or paused.
-# Set = running, cleared = paused.
-analysis_running = asyncio.Event()
-analysis_running.set()  # start in "running" state
 
-# Active video stream (shared so seek commands can reach it)
-active_stream: Optional[VideoStream] = None
-seek_target: Optional[int] = None  # frame index to jump to
-
+# ─── Routes ──────────────────────────────────────────────────────────────────
 
 @app.get("/api")
 async def root() -> dict:
@@ -80,99 +133,12 @@ async def root() -> dict:
 
 @app.post("/api/start")
 async def start_demo(req: StartRequest) -> dict:
-    """Start processing the given match URL in a background task."""
-
-    # Set AI mode for this analysis session
-    ai_service.mode = req.ai_mode
-    ai_service.clear_history()  # reset temporal context for new video
-    # Ensure analysis is running (not paused from a previous session)
-    analysis_running.set()
-
-    async def run_analysis(url: str) -> None:
-        global active_stream, seek_target
-        stream = VideoStream(url)
-        active_stream = stream
-        seek_target = None
-
-        # Extract audio for crowd noise analysis (non-blocking fallback)
-        audio = AudioAnalyzer(url)
-
-        try:
-            await manager.broadcast({
-                "type": "metadata",
-                "fps": stream.fps,
-                "total_frames": stream.total_frames,
-                "duration": stream.duration,
-                "has_audio": audio.available,
-            })
-
-            FRAME_INTERVAL = 30   # ~1 frame/s at 30fps
-            AI_INTERVAL = 3       # GPT-4o: every 3 sampled frames (~3s); Gemma: every 5
-            if ai_service.mode == "local":
-                AI_INTERVAL = 5
-            sampled = 0
-            idx = 0
-
-            while True:
-                # Wait here if analysis is paused
-                await analysis_running.wait()
-
-                # Handle pending seek
-                if seek_target is not None:
-                    target = seek_target
-                    seek_target = None
-                    stream.seek(target)
-                    idx = target
-                    sampled = 0
-                    ai_service.clear_history()  # context is invalid after jump
-
-                ret, frame = stream.read()
-                if not ret:
-                    break
-
-                if idx % FRAME_INTERVAL == 0:
-                    resized = cv2.resize(frame, (640, 360))
-
-                    # ── Crowd noise at this timestamp ──
-                    time_sec = idx / stream.fps
-                    crowd = audio.get_crowd_intensity(time_sec)
-
-                    # ── YOLO (every frame, fast) ──
-                    detections = detect_objects(resized)
-
-                    # ── AI semantic analysis (with audio context) ──
-                    if sampled % AI_INTERVAL == 0:
-                        event = ai_service.analyze(resized, crowd_intensity=crowd)
-                    else:
-                        event = {"event_type": "normal_play", "tension_score": 0,
-                                 "description": None, "sentiment": "calm",
-                                 "model_source": ai_service.mode}
-
-                    frame_b64 = frame_to_jpeg_base64(resized)
-
-                    await manager.broadcast({
-                        "type": "event",
-                        "frame_index": idx,
-                        "frame_data": f"data:image/jpeg;base64,{frame_b64}",
-                        "detections": detections,
-                        "crowd_intensity": crowd,
-                        **event,
-                    })
-
-                    sampled += 1
-
-                idx += 1
-                await asyncio.sleep(0.01)
-
-        except Exception as e:
-            await manager.broadcast({"type": "error", "message": str(e)})
-        finally:
-            if active_stream is stream:
-                active_stream = None
-            stream.release()
-
-    asyncio.create_task(run_analysis(req.url))
-    return {"status": "started", "url": req.url}
+    """Start a new analysis session and return its ID."""
+    session_id = uuid.uuid4().hex[:8]
+    session = AnalysisSession(session_id, req.url, req.ai_mode)
+    sessions[session_id] = session
+    session.task = asyncio.create_task(run_analysis(session))
+    return {"status": "started", "url": req.url, "session_id": session_id}
 
 
 @app.get("/")
@@ -189,20 +155,126 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             try:
                 data = json.loads(raw)
                 cmd = data.get("type")
-                if cmd == "pause":
-                    analysis_running.clear()
-                    await manager.broadcast({"type": "status", "status": "paused"})
+
+                if cmd == "join":
+                    sid = data.get("session_id")
+                    if sid:
+                        manager.join_session(websocket, sid)
+
+                elif cmd == "stop":
+                    session = manager.get_session(websocket)
+                    if session:
+                        await session.broadcast({"type": "status", "status": "stopped"})
+                        session.cancel()
+                        sessions.pop(session.id, None)
+                        # Clear mapping for all clients of this session
+                        for ws in list(session.clients):
+                            manager.ws_session.pop(id(ws), None)
+
+                elif cmd == "pause":
+                    session = manager.get_session(websocket)
+                    if session:
+                        session.running.clear()
+                        await session.broadcast({"type": "status", "status": "paused"})
+
                 elif cmd == "resume":
-                    analysis_running.set()
-                    await manager.broadcast({"type": "status", "status": "analyzing"})
+                    session = manager.get_session(websocket)
+                    if session:
+                        session.running.set()
+                        await session.broadcast({"type": "status", "status": "analyzing"})
+
                 elif cmd == "seek":
-                    global seek_target
-                    target_time = data.get("time", 0)
-                    if active_stream:
-                        seek_target = int(target_time * active_stream.fps)
+                    session = manager.get_session(websocket)
+                    if session and session.stream:
+                        target_time = data.get("time", 0)
+                        session.seek_target = int(target_time * session.stream.fps)
+
             except (json.JSONDecodeError, AttributeError):
-                pass  # Ignore non-JSON or malformed messages
+                pass
     except WebSocketDisconnect:
         manager.disconnect(websocket)
     except Exception:
         manager.disconnect(websocket)
+
+
+# ─── Analysis loop ───────────────────────────────────────────────────────────
+
+async def run_analysis(session: AnalysisSession) -> None:
+    try:
+        stream = VideoStream(session.url)
+        session.stream = stream
+        audio = AudioAnalyzer(session.url)
+        session.audio = audio
+
+        await session.broadcast({
+            "type": "metadata",
+            "fps": stream.fps,
+            "total_frames": stream.total_frames,
+            "duration": stream.duration,
+            "has_audio": audio.available,
+            "session_id": session.id,
+        })
+
+        FRAME_INTERVAL = 30
+        AI_INTERVAL = 3 if session.ai_service.mode != "local" else 5
+        sampled = 0
+        idx = 0
+
+        while not session.cancelled:
+            await session.running.wait()
+            if session.cancelled:
+                break
+
+            # Handle pending seek
+            if session.seek_target is not None:
+                target = session.seek_target
+                session.seek_target = None
+                stream.seek(target)
+                idx = target
+                sampled = 0
+                session.ai_service.clear_history()
+
+            ret, frame = stream.read()
+            if not ret:
+                break
+
+            if idx % FRAME_INTERVAL == 0:
+                resized = cv2.resize(frame, (640, 360))
+
+                time_sec = idx / stream.fps
+                crowd = audio.get_crowd_intensity(time_sec)
+
+                detections = detect_objects(resized)
+
+                if sampled % AI_INTERVAL == 0:
+                    event = session.ai_service.analyze(resized, crowd_intensity=crowd)
+                else:
+                    event = {"event_type": "normal_play", "tension_score": 0,
+                             "description": None, "sentiment": "calm",
+                             "model_source": session.ai_service.mode}
+
+                frame_b64 = frame_to_jpeg_base64(resized)
+
+                await session.broadcast({
+                    "type": "event",
+                    "frame_index": idx,
+                    "frame_data": f"data:image/jpeg;base64,{frame_b64}",
+                    "detections": detections,
+                    "crowd_intensity": crowd,
+                    **event,
+                })
+
+                sampled += 1
+
+            idx += 1
+            await asyncio.sleep(0.01)
+
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        await session.broadcast({"type": "error", "message": str(e)})
+    finally:
+        if session.stream:
+            session.stream.release()
+            session.stream = None
+        sessions.pop(session.id, None)

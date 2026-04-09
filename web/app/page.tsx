@@ -17,10 +17,11 @@ export default function Page() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const frameRef = useRef(0);
-  const fpsRef = useRef(25); // default, updated when backend sends metadata
+  const fpsRef = useRef(25);
+  const sessionIdRef = useRef<string | null>(null);
   // Smooth progress interpolation
-  const lastFrameTimeRef = useRef(0);   // authoritative time from last frame (seconds)
-  const lastFrameArrivalRef = useRef(0); // Date.now() when that frame arrived
+  const lastFrameTimeRef = useRef(0);
+  const lastFrameArrivalRef = useRef(0);
   const animFrameRef = useRef(0);
 
   // Build dynamic URLs in the client
@@ -35,6 +36,13 @@ export default function Page() {
       `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws`;
   };
 
+  // Send commands to backend via WebSocket
+  const sendWsCommand = useCallback((type: string, extra: Record<string, unknown> = {}) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type, ...extra }));
+    }
+  }, []);
+
   // Connect WebSocket on mount, reconnect if closed
   const connectWS = useCallback(() => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
@@ -43,22 +51,27 @@ export default function Page() {
       reconnectTimerRef.current = null;
     }
     const wsUrl = getBackendWS();
-    if (!wsUrl) return; // Skip if not in browser
+    if (!wsUrl) return;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
+
+    ws.onopen = () => {
+      // Re-join session if we had one (reconnect scenario)
+      if (sessionIdRef.current) {
+        ws.send(JSON.stringify({ type: "join", session_id: sessionIdRef.current }));
+      }
+    };
 
     ws.onmessage = (msg) => {
       try {
         const data = JSON.parse(msg.data);
         if (data.type === "metadata") {
-          // Real video metadata from backend
           fpsRef.current = data.fps || 25;
           if (data.duration > 0) {
             setTotalTime(Math.floor(data.duration));
           }
         } else if (data.type === "event") {
           frameRef.current = data.frame_index ?? frameRef.current;
-          // Feed the interpolation loop with authoritative time
           const frameTime = frameRef.current / fpsRef.current;
           lastFrameTimeRef.current = frameTime;
           lastFrameArrivalRef.current = Date.now();
@@ -72,7 +85,6 @@ export default function Page() {
           };
           setEvents((prev) => [event, ...prev].slice(0, 50));
 
-          // Pass frame + detections + audio to VideoPanel
           if (data.frame_data) {
             window.dispatchEvent(new CustomEvent("vio-frame-update", {
               detail: {
@@ -82,6 +94,9 @@ export default function Page() {
               }
             }));
           }
+        } else if (data.type === "status" && data.status === "stopped") {
+          sessionIdRef.current = null;
+          setStatus("idle");
         } else if (data.type === "error") {
           console.error("Backend error:", data.message);
         }
@@ -98,7 +113,21 @@ export default function Page() {
 
   useEffect(() => {
     connectWS();
+
+    // Stop session when the user leaves/closes the page
+    const handleUnload = () => {
+      if (sessionIdRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: "stop" }));
+      }
+    };
+    window.addEventListener("beforeunload", handleUnload);
+
     return () => {
+      window.removeEventListener("beforeunload", handleUnload);
+      // Send stop on React unmount as well
+      if (sessionIdRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: "stop" }));
+      }
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       wsRef.current?.close();
     };
@@ -125,29 +154,44 @@ export default function Page() {
   const handleStart = async (url?: string) => {
     const effectiveUrl = url ?? sourceUrl;
     if (!effectiveUrl) return;
+
+    // Stop previous session if any
+    if (sessionIdRef.current) {
+      sendWsCommand("stop");
+      sessionIdRef.current = null;
+    }
+
     setEvents([]);
     frameRef.current = 0;
     fpsRef.current = 25;
     setCurrentTime(0);
-    setTotalTime(90 * 60); // reset until backend sends real metadata
+    lastFrameTimeRef.current = 0;
+    lastFrameArrivalRef.current = 0;
+    setTotalTime(90 * 60);
     setStatus("analyzing");
+
     try {
-      await fetch(`${getBackendHTTP()}/start`, {
+      const res = await fetch(`${getBackendHTTP()}/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: effectiveUrl, ai_mode: aiMode }),
       });
+      const body = await res.json();
+      sessionIdRef.current = body.session_id;
+      // Subscribe this WebSocket to the new session
+      sendWsCommand("join", { session_id: body.session_id });
     } catch (e) {
       console.error("Failed to start:", e);
       setStatus("idle");
     }
   };
 
-  // Send commands to backend via WebSocket
-  const sendWsCommand = (type: string, extra: Record<string, unknown> = {}) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type, ...extra }));
+  const handleStop = () => {
+    if (sessionIdRef.current) {
+      sendWsCommand("stop");
+      sessionIdRef.current = null;
     }
+    setStatus("idle");
   };
 
   // Seek: tell backend to jump to a specific time in the video
@@ -161,6 +205,8 @@ export default function Page() {
   const handleStatusChange = (s: "idle" | "analyzing" | "paused", url?: string) => {
     if (s === "analyzing" && status === "idle") {
       handleStart(url);
+    } else if (s === "idle") {
+      handleStop();
     } else if (s === "paused" && status === "analyzing") {
       sendWsCommand("pause");
       setStatus("paused");

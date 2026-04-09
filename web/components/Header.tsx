@@ -38,6 +38,10 @@ export function Header({
     onStatusChange(status === "paused" ? "analyzing" : "paused");
   };
 
+  const handleStop = () => {
+    onStatusChange("idle");
+  };
+
   return (
     <header className="glass-header h-16 flex items-center justify-between px-6 shrink-0 z-50">
       {/* Logo */}
@@ -67,14 +71,25 @@ export function Header({
             onClick={handleStart}
             className="px-4 py-1.5 bg-brand-primary/10 text-brand-primary border border-brand-primary/20 rounded-lg text-sm font-medium hover:bg-brand-primary/20 transition-colors"
           >
-            {isAnalyzing ? "Restart" : "Start Analysis"}
+            {isAnalyzing || status === "paused" ? "Restart" : "Start Analysis"}
           </button>
-          <button
-            onClick={handlePause}
-            className="w-8 h-8 flex items-center justify-center bg-brand-panel border border-brand-border rounded-lg text-brand-muted hover:text-white transition-colors text-xs"
-          >
-            {status === "paused" ? "▶" : "II"}
-          </button>
+          {(isAnalyzing || status === "paused") && (
+            <>
+              <button
+                onClick={handlePause}
+                className="w-8 h-8 flex items-center justify-center bg-brand-panel border border-brand-border rounded-lg text-brand-muted hover:text-white transition-colors text-xs"
+              >
+                {status === "paused" ? "▶" : "II"}
+              </button>
+              <button
+                onClick={handleStop}
+                className="w-8 h-8 flex items-center justify-center bg-brand-panel border border-red-500/30 rounded-lg text-red-400 hover:bg-red-500/10 transition-colors text-xs"
+                title="Stop analysis"
+              >
+                ■
+              </button>
+            </>
+          )}
         </div>
       </div>
 
