@@ -15,7 +15,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from stream_reader import frame_generator
+from stream_reader import frame_generator, get_video_metadata
 from analyzer import ai_service, detect_objects, frame_to_jpeg_base64
 
 
@@ -84,6 +84,16 @@ async def start_demo(req: StartRequest) -> dict:
 
     async def run_analysis(url: str) -> None:
         try:
+            # Obtain real video metadata and broadcast to clients
+            meta = get_video_metadata(url)
+            fps = meta["fps"]
+            await manager.broadcast({
+                "type": "metadata",
+                "fps": fps,
+                "total_frames": meta["total_frames"],
+                "duration": meta["duration"],
+            })
+
             FRAME_INTERVAL = 30   # ~1 frame/s at 30fps
             AI_INTERVAL = 3       # GPT-4o: every 3 sampled frames (~3s); Gemma: every 5
             if ai_service.mode == "local":

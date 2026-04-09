@@ -43,6 +43,19 @@ def yt_dlp_stream(url: str) -> Optional[subprocess.Popen]:
         return None
 
 
+def get_video_metadata(url: str) -> dict:
+    """Return FPS, total frame count, and duration for the given video URL."""
+    cap = open_video_capture(url)
+    if cap is None:
+        return {"fps": 25.0, "total_frames": 0, "duration": 0.0}
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    duration = total_frames / fps if fps > 0 else 0.0
+    cap.release()
+    return {"fps": fps, "total_frames": total_frames, "duration": duration}
+
+
 def frame_generator(url: str, max_frames: int = 0) -> Generator[np.ndarray, None, None]:
     """Yield frames (as numpy arrays) from the given video URL.
 

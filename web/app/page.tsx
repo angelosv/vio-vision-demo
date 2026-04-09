@@ -13,10 +13,11 @@ export default function Page() {
   const [aiMode, setAiMode] = useState<AIMode>("cloud");
   const [currentTime, setCurrentTime] = useState(0);
   const [events, setEvents] = useState<MatchEvent[]>([]);
+  const [totalTime, setTotalTime] = useState(90 * 60);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const frameRef = useRef(0);
-  const totalTime = 90 * 60;
+  const fpsRef = useRef(25); // default, updated when backend sends metadata
 
   // Build dynamic URLs in the client
   const getBackendHTTP = () => {
@@ -45,14 +46,20 @@ export default function Page() {
     ws.onmessage = (msg) => {
       try {
         const data = JSON.parse(msg.data);
-        if (data.type === "event") {
+        if (data.type === "metadata") {
+          // Real video metadata from backend
+          fpsRef.current = data.fps || 25;
+          if (data.duration > 0) {
+            setTotalTime(Math.floor(data.duration));
+          }
+        } else if (data.type === "event") {
           frameRef.current = data.frame_index ?? frameRef.current;
-          // Advance time roughly: ~25fps → each frame ≈ 0.04s
-          setCurrentTime(Math.floor(frameRef.current * 0.04));
+          // Use real FPS for accurate time calculation
+          setCurrentTime(Math.floor(frameRef.current / fpsRef.current));
 
           const event: MatchEvent = {
             id: String(data.frame_index ?? Date.now()),
-            timestamp: formatTime(frameRef.current),
+            timestamp: formatTime(frameRef.current, fpsRef.current),
             title: data.event_type ?? "Event",
             description: data.description ?? data.raw_model_output?.slice(0, 120),
             category: mapCategory(data.event_type),
@@ -92,7 +99,9 @@ export default function Page() {
     if (!effectiveUrl) return;
     setEvents([]);
     frameRef.current = 0;
+    fpsRef.current = 25;
     setCurrentTime(0);
+    setTotalTime(90 * 60); // reset until backend sends real metadata
     setStatus("analyzing");
     try {
       await fetch(`${getBackendHTTP()}/start`, {
@@ -155,8 +164,8 @@ export default function Page() {
 }
 
 // Helpers
-function formatTime(frameIndex: number): string {
-  const seconds = Math.floor(frameIndex * 0.04);
+function formatTime(frameIndex: number, fps: number = 25): string {
+  const seconds = Math.floor(frameIndex / fps);
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
