@@ -1,0 +1,38 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: vio-vision
+  namespace: vio-demo
+spec:
+  hosts:
+  - "*"
+  gateways:
+  - istio-system/vio-vision-gateway
+  http:
+  # Backend API routes (more specific first)
+  - match:
+    - uri:
+        prefix: "/api"
+    route:
+    - destination:
+        host: vio-vision-backend.vio-demo.svc.cluster.local
+        port:
+          number: 8000
+  # WebSocket routes for backend
+  - match:
+    - uri:
+        prefix: "/ws"
+    route:
+    - destination:
+        host: vio-vision-backend.vio-demo.svc.cluster.local
+        port:
+          number: 8000
+  # Frontend routes (catch-all)
+  - match:
+    - uri:
+        prefix: "/"
+    route:
+    - destination:
+        host: vio-vision-web.vio-demo.svc.cluster.local
+        port:
+          number: 3000

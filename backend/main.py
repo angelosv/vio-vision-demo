@@ -62,12 +62,12 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-@app.get("/")
+@app.get("/api")
 async def root() -> dict:
     return {"status": "ok", "message": "Vio Vision Demo Backend"}
 
 
-@app.post("/start")
+@app.post("/api/start")
 async def start_demo(req: StartRequest) -> dict:
     """Start processing the given match URL in a background task."""
 
@@ -118,6 +118,11 @@ async def start_demo(req: StartRequest) -> dict:
 
     asyncio.create_task(run_analysis(req.url))
     return {"status": "started", "url": req.url}
+
+
+@app.get("/")
+async def health_check() -> dict:
+    return {"status": "ok"}
 
 
 @app.websocket("/ws")

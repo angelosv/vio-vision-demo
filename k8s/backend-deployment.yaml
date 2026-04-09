@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vio-vision-backend
+  namespace: vio-demo
+  labels:
+    app: vio-vision-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vio-vision-backend
+  template:
+    metadata:
+      labels:
+        app: vio-vision-backend
+        version: demo
+    spec:
+      imagePullSecrets:
+      - name: reachuqa2
+      containers:
+      - name: backend
+        image: reachuqa2.azurecr.io/vio-vision-backend:demo-v2
+        ports:
+        - containerPort: 8000
+          name: http
+        env:
+        - name: PORT
+          value: "8000"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5

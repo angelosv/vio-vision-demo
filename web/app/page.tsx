@@ -7,14 +7,6 @@ import { BottomPanels } from "@/components/BottomPanels";
 import { EventsSidebar } from "@/components/EventsSidebar";
 import type { MatchEvent } from "@/types/events";
 
-const isLocal = typeof window !== "undefined" && window.location.hostname === "localhost";
-const BACKEND_HTTP = isLocal
-  ? "http://localhost:8080"
-  : `${window.location.protocol}//${window.location.host}/api`;
-const BACKEND_WS = isLocal
-  ? "ws://localhost:8080/ws"
-  : `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/ws`;
-
 export default function Page() {
   const [status, setStatus] = useState<"idle" | "analyzing" | "paused">("idle");
   const [sourceUrl, setSourceUrl] = useState("");
@@ -26,6 +18,18 @@ export default function Page() {
   const frameRef = useRef(0);
   const totalTime = 90 * 60;
 
+  // Build dynamic URLs in the client
+  const getBackendHTTP = () => {
+    if (typeof window === "undefined") return "/api";
+    return process.env.NEXT_PUBLIC_API_URL || `${window.location.protocol}//${window.location.host}/api`;
+  };
+
+  const getBackendWS = () => {
+    if (typeof window === "undefined") return "";
+    return process.env.NEXT_PUBLIC_WS_URL ||
+      `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws`;
+  };
+
   // Connect WebSocket on mount, reconnect if closed
   const connectWS = useCallback(() => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
@@ -33,7 +37,9 @@ export default function Page() {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
-    const ws = new WebSocket(BACKEND_WS);
+    const wsUrl = getBackendWS();
+    if (!wsUrl) return; // Skip if not in browser
+    const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onmessage = (msg) => {
@@ -89,7 +95,7 @@ export default function Page() {
     setCurrentTime(0);
     setStatus("analyzing");
     try {
-      await fetch(`${BACKEND_HTTP}/start`, {
+      await fetch(`${getBackendHTTP()}/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: effectiveUrl, ai_mode: aiMode }),
