@@ -14,13 +14,13 @@ spec:
     metadata:
       labels:
         app: vio-vision-web
-        version: demo
+        version: v0.4.0
     spec:
       imagePullSecrets:
       - name: reachuqa2
       containers:
       - name: web
-        image: reachuqa2.azurecr.io/vio-vision-web:demo-v2
+        image: reachuqa2.azurecr.io/vio-vision-web:v0.4.0
         ports:
         - containerPort: 3000
           name: http

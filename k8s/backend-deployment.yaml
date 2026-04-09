@@ -14,26 +14,62 @@ spec:
     metadata:
       labels:
         app: vio-vision-backend
-        version: demo
+        version: v0.4.0
     spec:
       imagePullSecrets:
       - name: reachuqa2
       containers:
       - name: backend
-        image: reachuqa2.azurecr.io/vio-vision-backend:demo-v2
+        image: reachuqa2.azurecr.io/vio-vision-backend:v0.4.0
         ports:
         - containerPort: 8000
           name: http
         env:
         - name: PORT
           value: "8000"
+        - name: AI_MODE
+          value: "cloud"
+        # Azure OpenAI
+        - name: AZURE_OPENAI_ENDPOINT
+          valueFrom:
+            secretKeyRef:
+              name: vio-openai-secret
+              key: AZURE_OPENAI_ENDPOINT
+        - name: AZURE_OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: vio-openai-secret
+              key: AZURE_OPENAI_API_KEY
+        - name: AZURE_OPENAI_DEPLOYMENT
+          value: "gpt-4o"
+        - name: AZURE_OPENAI_API_VERSION
+          value: "2024-12-01-preview"
+        # Azure Video Indexer (optional — gracefully disabled if absent)
+        - name: AZURE_VIDEO_INDEXER_ACCOUNT_ID
+          valueFrom:
+            secretKeyRef:
+              name: vio-video-indexer
+              key: AZURE_VIDEO_INDEXER_ACCOUNT_ID
+              optional: true
+        - name: AZURE_VIDEO_INDEXER_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: vio-video-indexer
+              key: AZURE_VIDEO_INDEXER_API_KEY
+              optional: true
+        - name: AZURE_VIDEO_INDEXER_LOCATION
+          valueFrom:
+            secretKeyRef:
+              name: vio-video-indexer
+              key: AZURE_VIDEO_INDEXER_LOCATION
+              optional: true
         resources:
           requests:
-            memory: "512Mi"
-            cpu: "250m"
+            memory: "1Gi"
+            cpu: "500m"
           limits:
-            memory: "2Gi"
-            cpu: "1000m"
+            memory: "3Gi"
+            cpu: "2000m"
         livenessProbe:
           httpGet:
             path: /
