@@ -7,8 +7,9 @@ import { BottomPanels } from "@/components/BottomPanels";
 import { EventsSidebar } from "@/components/EventsSidebar";
 import { AlertBanner } from "@/components/AlertBanner";
 import type { MatchEvent, Detection, TensionPoint } from "@/types/events";
+import type { DetectionFrame } from "@/components/VideoPanel";
 
-const API_VERSION = "0.3.0";
+const API_VERSION = "0.4.0";
 
 export default function Page() {
   const [status, setStatus] = useState<"idle" | "analyzing" | "paused">("idle");
@@ -23,6 +24,14 @@ export default function Page() {
   const [ballHistory, setBallHistory] = useState<{ x: number; y: number }[]>([]);
   const [alert, setAlert] = useState<MatchEvent | null>(null);
   const [backendVersion, setBackendVersion] = useState<string | null>(null);
+  // Hybrid playback state
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [streamFrames, setStreamFrames] = useState(true);
+  const detectionBufferRef = useRef<Map<number, DetectionFrame>>(new Map());
+  // Scoreboard from Video Indexer
+  const [scoreboard, setScoreboard] = useState<{ home_team?: string; away_team?: string; home_score: number; away_score: number } | null>(null);
+  const [sceneMarkers, setSceneMarkers] = useState<{ start_sec: number }[]>([]);
+
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const frameRef = useRef(0);
@@ -79,6 +88,14 @@ export default function Page() {
           if (data.duration > 0) {
             setTotalTime(Math.floor(data.duration));
           }
+          // Hybrid playback: capture video URL and mode
+          if (data.video_url) setVideoUrl(data.video_url);
+          setStreamFrames(data.stream_frames ?? true);
+          detectionBufferRef.current.clear();
+        } else if (data.type === "indexer_ready") {
+          // Video Indexer insights arrived
+          if (data.scoreboard) setScoreboard(data.scoreboard);
+          if (data.scenes) setSceneMarkers(data.scenes);
         } else if (data.type === "event") {
           frameRef.current = data.frame_index ?? frameRef.current;
           const frameTime = frameRef.current / fpsRef.current;
@@ -88,6 +105,22 @@ export default function Page() {
           // Store detections + team colors for BottomPanels
           setDetections(data.detections ?? []);
           if (data.team_colors) setTeamColors(data.team_colors);
+
+          // Buffer detections for native playback sync
+          const timeSec = data.time_sec ?? frameTime;
+          const quantizedTime = Math.round(timeSec * 10) / 10;
+          detectionBufferRef.current.set(quantizedTime, {
+            detections: data.detections ?? [],
+            teamColors: data.team_colors ?? [],
+            crowdIntensity: data.crowd_intensity ?? -1,
+          });
+          // Evict old entries (keep last 600 = ~60 seconds at 0.1s resolution)
+          if (detectionBufferRef.current.size > 600) {
+            const keys = Array.from(detectionBufferRef.current.keys()).sort((a, b) => a - b);
+            for (let i = 0; i < keys.length - 600; i++) {
+              detectionBufferRef.current.delete(keys[i]);
+            }
+          }
 
           // Track ball position for heatmap
           const ballDet = (data.detections ?? []).find((d: Detection) => d.label === "Ball");
@@ -117,8 +150,8 @@ export default function Page() {
             });
           }
 
-          // Alert for critical events (tension >= 8) or confirmed goals
-          if (data.confirmed_goal || tensionScore >= 8) {
+          // Alert for critical events
+          if (data.confirmed_goal || data.confirmed_card || data.confirmed_penalty || tensionScore >= 8) {
             setAlert(event);
           }
 
@@ -185,9 +218,9 @@ export default function Page() {
     };
   }, [connectWS]);
 
-  // Smooth progress bar
+  // Smooth progress bar (legacy mode only — native mode uses video.currentTime)
   useEffect(() => {
-    if (status !== "analyzing") {
+    if (status !== "analyzing" || !streamFrames) {
       cancelAnimationFrame(animFrameRef.current);
       return;
     }
@@ -201,7 +234,7 @@ export default function Page() {
     };
     animFrameRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animFrameRef.current);
-  }, [status, totalTime]);
+  }, [status, totalTime, streamFrames]);
 
   const handleStart = async (url?: string) => {
     const effectiveUrl = url ?? sourceUrl;
@@ -218,6 +251,11 @@ export default function Page() {
     setTensionHistory([]);
     setBallHistory([]);
     setAlert(null);
+    setVideoUrl(null);
+    setStreamFrames(true);
+    setScoreboard(null);
+    setSceneMarkers([]);
+    detectionBufferRef.current.clear();
     frameRef.current = 0;
     fpsRef.current = 25;
     setCurrentTime(0);
@@ -230,7 +268,7 @@ export default function Page() {
       const res = await fetch(`${getBackendHTTP()}/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: effectiveUrl, ai_mode: aiMode }),
+        body: JSON.stringify({ url: effectiveUrl, ai_mode: aiMode, stream_frames: false }),
       });
       const body = await res.json();
       sessionIdRef.current = body.session_id;
@@ -294,6 +332,15 @@ export default function Page() {
             totalTime={totalTime}
             onTimeChange={setCurrentTime}
             onSeek={handleSeek}
+            videoUrl={streamFrames ? null : videoUrl}
+            detectionBuffer={detectionBufferRef.current}
+            isPlaying={status === "analyzing"}
+            onPlayPause={() => {
+              if (status === "analyzing") handleStatusChange("paused");
+              else if (status === "paused") handleStatusChange("analyzing");
+            }}
+            scoreboard={scoreboard}
+            sceneMarkers={sceneMarkers}
           />
           <BottomPanels detections={detections} tensionHistory={tensionHistory} teamColors={teamColors} ballHistory={ballHistory} />
         </div>
@@ -315,8 +362,11 @@ function formatTime(frameIndex: number, fps: number = 25): string {
 function mapCategory(eventType?: string): MatchEvent["category"] {
   if (!eventType) return "match";
   const t = eventType.toLowerCase();
-  if (t.includes("goal") || t.includes("critical")) return "critical";
-  if (t.includes("celebration") || t.includes("key")) return "key_action";
+  if (t === "goal" || t === "goal_chance" || t === "penalty") return "critical";
+  if (t === "celebration") return "key_action";
+  if (t === "yellow_card" || t === "red_card") return "card";
+  if (t === "foul") return "foul";
+  if (t === "corner" || t === "free_kick" || t === "offside" || t === "substitution") return "set_piece";
   if (t.includes("error") || t.includes("system")) return "system";
   return "match";
 }

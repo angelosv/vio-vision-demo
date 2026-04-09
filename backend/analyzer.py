@@ -118,6 +118,13 @@ def extract_team_colors(frame: np.ndarray, detections: List[Dict[str, Any]]) -> 
 
 
 # ─── AI Service ──────────────────────────────────────────────────────────────
+VALID_EVENT_TYPES = {
+    "goal", "goal_chance", "celebration", "yellow_card", "red_card",
+    "foul", "penalty", "offside", "substitution", "corner",
+    "free_kick", "normal_play", "crowd_reaction",
+}
+
+
 class AIService:
     MAX_HISTORY = 5
     ENGAGEMENT_COOLDOWN = 30  # seconds between engagement events
@@ -156,9 +163,9 @@ class AIService:
         return self.match_info
 
     def analyze(self, frame: np.ndarray, teacher_mode: bool = False,
-                crowd_intensity: float = -1) -> Dict[str, Any]:
+                crowd_intensity: float = -1, transcript: str = None) -> Dict[str, Any]:
         frame_b64 = frame_to_jpeg_base64(frame)
-        prompt = self._build_prompt(crowd_intensity=crowd_intensity)
+        prompt = self._build_prompt(crowd_intensity=crowd_intensity, transcript=transcript)
 
         if teacher_mode or self.mode == "cloud":
             result = self.call_gpt4o(prompt, frame_b64)
@@ -189,12 +196,14 @@ class AIService:
 
         return result
 
-    def _build_prompt(self, crowd_intensity: float = -1) -> str:
+    def _build_prompt(self, crowd_intensity: float = -1, transcript: str = None) -> str:
         base = (
             "You are an AI sports analyst. Analyze this football match frame and respond ONLY in valid JSON "
             "(no markdown, no explanation):\n"
             "{\n"
-            "  \"event_type\": \"goal_chance\" | \"goal\" | \"celebration\" | \"normal_play\" | \"crowd_reaction\",\n"
+            "  \"event_type\": \"goal\" | \"goal_chance\" | \"celebration\" | \"yellow_card\" | \"red_card\" | "
+            "\"foul\" | \"penalty\" | \"offside\" | \"substitution\" | \"corner\" | \"free_kick\" | "
+            "\"normal_play\" | \"crowd_reaction\",\n"
             "  \"tension_score\": 0-10,\n"
             "  \"description\": \"1-2 sentences\",\n"
             "  \"sentiment\": \"calm\" | \"tense\" | \"euphoric\" | \"frustrated\",\n"
@@ -203,6 +212,22 @@ class AIService:
         )
 
         sections: List[str] = [base]
+
+        # Visual cue hints for event detection
+        sections.append(
+            "EVENT DETECTION HINTS:\n"
+            "- goal: Ball in net, scoreboard change, players celebrating, crowd eruption\n"
+            "- goal_chance: Shot on goal, goalkeeper diving, ball near goal\n"
+            "- celebration: Players hugging/running/sliding after a goal\n"
+            "- yellow_card / red_card: Referee holding colored card up, player confrontation, players surrounding referee\n"
+            "- foul: Player on the ground after contact, referee whistling (arm gesture), free kick setup\n"
+            "- penalty: Players lined up at edge of box, ball on penalty spot, goalkeeper on line\n"
+            "- offside: Linesman flag raised, play stopped with players looking offside direction\n"
+            "- substitution: Player walking off/on at sideline, fourth official holding electronic board\n"
+            "- corner: Ball being placed at corner flag, players crowding the box\n"
+            "- free_kick: Wall of players, ball placed outside box, players lining up\n"
+            "- crowd_reaction: Notable crowd reaction without a specific match event"
+        )
 
         # Match info
         if self.match_info:
@@ -219,6 +244,14 @@ class AIService:
                 "(0 = silent, 10 = roaring crowd). "
                 "Use this to inform your tension_score and sentiment — "
                 "high crowd noise often indicates exciting or critical moments."
+            )
+
+        # Commentary transcript from Video Indexer
+        if transcript:
+            sections.append(
+                f"COMMENTARY TRANSCRIPT: \"{transcript}\"\n"
+                "Use the commentator's words to enrich your description and "
+                "confirm event types (e.g. 'GOAL!' confirms a goal event)."
             )
 
         # Temporal context from recent events
@@ -315,18 +348,24 @@ class AIService:
         if text.startswith("json"):
             text = text[4:].strip()
         try:
-            return json.loads(text)
+            result = json.loads(text)
         except Exception:
             # Try to extract JSON block from text
             import re
             m = re.search(r'\{.*\}', text, re.DOTALL)
             if m:
                 try:
-                    return json.loads(m.group())
+                    result = json.loads(m.group())
                 except Exception:
-                    pass
-            return {"event_type": "normal_play", "tension_score": 0,
-                    "description": "Parsing error", "sentiment": "calm"}
+                    return {"event_type": "normal_play", "tension_score": 0,
+                            "description": "Parsing error", "sentiment": "calm"}
+            else:
+                return {"event_type": "normal_play", "tension_score": 0,
+                        "description": "Parsing error", "sentiment": "calm"}
+        # Validate event_type
+        if result.get("event_type") not in VALID_EVENT_TYPES:
+            result["event_type"] = "normal_play"
+        return result
 
     def save_for_training(self, frame_b64: str, label: Dict[str, Any]):
         with open(self.dataset_path, "a") as f:

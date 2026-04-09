@@ -7,7 +7,7 @@ export interface Detection {
 }
 
 export type EventCategory =
-  | "match" | "key_action" | "critical" | "system"
+  | "match" | "key_action" | "critical" | "card" | "foul" | "set_piece" | "system"
   | "poll" | "sentiment_prompt" | "product";
 
 export interface MatchEvent {

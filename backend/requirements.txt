@@ -8,3 +8,5 @@ requests
 pydantic
 ultralytics
 openai
+aiosqlite
+httpx
