@@ -83,6 +83,7 @@ async def start_demo(req: StartRequest) -> dict:
 
     # Set AI mode for this analysis session
     ai_service.mode = req.ai_mode
+    ai_service.clear_history()  # reset temporal context for new video
     # Ensure analysis is running (not paused from a previous session)
     analysis_running.set()
 
@@ -118,6 +119,7 @@ async def start_demo(req: StartRequest) -> dict:
                     stream.seek(target)
                     idx = target
                     sampled = 0
+                    ai_service.clear_history()  # context is invalid after jump
 
                 ret, frame = stream.read()
                 if not ret:

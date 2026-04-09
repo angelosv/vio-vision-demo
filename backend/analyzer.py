@@ -62,9 +62,16 @@ def detect_objects(frame: np.ndarray) -> List[Dict[str, Any]]:
 
 # ─── AI Service ──────────────────────────────────────────────────────────────
 class AIService:
+    MAX_HISTORY = 5  # number of recent events to include as context
+
     def __init__(self, mode: str = DEFAULT_AI_MODE):
         self.mode = mode
         self.dataset_path = "training_dataset.jsonl"
+        self.event_history: List[Dict[str, Any]] = []
+
+    def clear_history(self) -> None:
+        """Reset temporal context (e.g. on new analysis or seek)."""
+        self.event_history = []
 
     def analyze(self, frame: np.ndarray, teacher_mode: bool = False) -> Dict[str, Any]:
         frame_b64 = frame_to_jpeg_base64(frame)
@@ -79,10 +86,20 @@ class AIService:
             result = self.call_gemma(prompt, frame_b64)
             result["model_source"] = "gemma (local)"
 
+        # Store in history for temporal context
+        self.event_history.append({
+            "event_type": result.get("event_type", "normal_play"),
+            "tension_score": result.get("tension_score", 0),
+            "description": result.get("description", ""),
+            "sentiment": result.get("sentiment", "calm"),
+        })
+        if len(self.event_history) > self.MAX_HISTORY:
+            self.event_history = self.event_history[-self.MAX_HISTORY:]
+
         return result
 
     def _build_prompt(self) -> str:
-        return (
+        base = (
             "You are an AI sports analyst. Analyze this football match frame and respond ONLY in valid JSON "
             "(no markdown, no explanation):\n"
             "{\n"
@@ -91,6 +108,27 @@ class AIService:
             "  \"description\": \"1-2 sentences\",\n"
             "  \"sentiment\": \"calm\" | \"tense\" | \"euphoric\" | \"frustrated\"\n"
             "}"
+        )
+
+        if not self.event_history:
+            return base
+
+        # Build temporal context from recent events
+        context_lines = []
+        for i, ev in enumerate(self.event_history):
+            desc = ev.get("description") or "—"
+            context_lines.append(
+                f"  {i+1}. [{ev['event_type']}] tension={ev['tension_score']}, "
+                f"sentiment={ev['sentiment']} — {desc}"
+            )
+        context = "\n".join(context_lines)
+
+        return (
+            f"{base}\n\n"
+            f"MATCH CONTEXT — Recent events (oldest to newest):\n{context}\n\n"
+            "Use this context to maintain narrative continuity. "
+            "Reference what happened before if relevant (e.g. \"after the corner kick...\", "
+            "\"the team continues pressing...\"). Avoid repeating the same description."
         )
 
     # ── GPT-4o via Azure OpenAI (multimodal) ──────────────────────────────────
