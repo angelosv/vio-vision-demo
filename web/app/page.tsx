@@ -282,43 +282,23 @@ export default function Page() {
     const effectiveUrl = url ?? sourceUrl;
     if (!effectiveUrl) return;
 
-    if (sessionIdRef.current) {
-      sendWsCommand("stop");
-      sessionIdRef.current = null;
-    }
-
     setEvents([]);
     setDetections([]);
     setTeamColors([]);
     setTensionHistory([]);
     setBallHistory([]);
     setAlert(null);
-    setVideoUrl(null);
-    setStreamFrames(true);
-    setScoreboard(null);
-    setSceneMarkers([]);
-    setActivePoll(null);
-    triggeredPollsRef.current.clear();
-    setHighlights([]);
-    setShowHighlightReel(false);
-    detectionBufferRef.current.clear();
     frameRef.current = 0;
-    fpsRef.current = 25;
     setCurrentTime(0);
-    lastFrameTimeRef.current = 0;
-    lastFrameArrivalRef.current = 0;
-    setTotalTime(90 * 60);
     setStatus("analyzing");
 
     try {
-      const res = await fetch(`${getBackendHTTP()}/start`, {
+      // Direct call to our FastAPI backend
+      await fetch(`${getBackendHTTP()}/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: effectiveUrl, ai_mode: aiMode, stream_frames: false }),
+        body: JSON.stringify({ url: effectiveUrl, ai_mode: aiMode }),
       });
-      const body = await res.json();
-      sessionIdRef.current = body.session_id;
-      sendWsCommand("join", { session_id: body.session_id });
     } catch (e) {
       console.error("Failed to start:", e);
       setStatus("idle");
