@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from stream_reader import VideoStream
 from audio_analyzer import AudioAnalyzer
-from analyzer import AIService, detect_objects, frame_to_jpeg_base64
+from analyzer import AIService, detect_objects, extract_team_colors, frame_to_jpeg_base64
 
 
 app = FastAPI(title="Vio Vision Demo Backend")
@@ -215,6 +215,17 @@ async def run_analysis(session: AnalysisSession) -> None:
         audio = AudioAnalyzer(session.url)
         session.audio = audio
 
+        # Identify teams from first frame
+        match_info = {}
+        ret_first, first_frame = stream.read()
+        if ret_first:
+            stream.seek(0)
+            resized_first = cv2.resize(first_frame, (640, 360))
+            try:
+                match_info = session.ai_service.identify_match(resized_first)
+            except Exception:
+                match_info = {"home_team": "Home", "away_team": "Away"}
+
         await session.broadcast({
             "type": "metadata",
             "fps": stream.fps,
@@ -222,6 +233,7 @@ async def run_analysis(session: AnalysisSession) -> None:
             "duration": stream.duration,
             "has_audio": audio.available,
             "session_id": session.id,
+            "match_info": match_info,
         })
 
         FRAME_INTERVAL = 30
@@ -254,6 +266,7 @@ async def run_analysis(session: AnalysisSession) -> None:
                 crowd = audio.get_crowd_intensity(time_sec)
 
                 detections = detect_objects(resized)
+                detections, team_colors = extract_team_colors(resized, detections)
 
                 if sampled % AI_INTERVAL == 0:
                     event = session.ai_service.analyze(resized, crowd_intensity=crowd)
@@ -262,6 +275,16 @@ async def run_analysis(session: AnalysisSession) -> None:
                              "description": None, "sentiment": "calm",
                              "model_source": session.ai_service.mode}
 
+                # Multi-signal goal confirmation
+                is_confirmed_goal = (
+                    event.get("event_type") in ("goal", "celebration")
+                    and crowd >= 8.0
+                    and event.get("tension_score", 0) >= 8
+                )
+                if is_confirmed_goal:
+                    event["event_type"] = "goal"
+                    event["confirmed_goal"] = True
+
                 frame_b64 = frame_to_jpeg_base64(resized)
 
                 await session.broadcast({
@@ -269,6 +292,7 @@ async def run_analysis(session: AnalysisSession) -> None:
                     "frame_index": idx,
                     "frame_data": f"data:image/jpeg;base64,{frame_b64}",
                     "detections": detections,
+                    "team_colors": team_colors,
                     "crowd_intensity": crowd,
                     **event,
                 })

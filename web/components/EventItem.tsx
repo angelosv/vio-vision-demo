@@ -27,6 +27,27 @@ function categoryStyle(category: MatchEvent["category"]): {
           "border-brand-success/30 text-brand-success bg-brand-success/10",
         timeColor: "text-brand-success",
       };
+    case "poll":
+      return {
+        label: "Poll",
+        className:
+          "border-brand-poll/30 text-brand-poll bg-brand-poll/10",
+        timeColor: "text-brand-poll",
+      };
+    case "sentiment_prompt":
+      return {
+        label: "Sentiment",
+        className:
+          "border-brand-sentiment/30 text-brand-sentiment bg-brand-sentiment/10",
+        timeColor: "text-brand-sentiment",
+      };
+    case "product":
+      return {
+        label: "Recommended",
+        className:
+          "border-brand-product/30 text-brand-product bg-brand-product/10",
+        timeColor: "text-brand-product",
+      };
     case "system":
     default:
       return {

@@ -2,7 +2,8 @@ import base64
 import json
 import os
 import subprocess
-from typing import Dict, Any, List, Optional
+import time
+from typing import Dict, Any, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -60,18 +61,99 @@ def detect_objects(frame: np.ndarray) -> List[Dict[str, Any]]:
     return detections
 
 
+def extract_team_colors(frame: np.ndarray, detections: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Add 'color' (hex) and 'team' (0|1) to player detections via jersey colour.
+
+    Returns (updated_detections, [team0_hex, team1_hex]).
+    """
+    h, w = frame.shape[:2]
+    players = []
+    hues: List[float] = []
+
+    for det in detections:
+        if det["label"] not in ("Player", "GK"):
+            continue
+        x1, y1, x2, y2 = det["box"]
+        # Convert normalised → pixel
+        px1, py1 = int(x1 * w), int(y1 * h)
+        px2, py2 = int(x2 * w), int(y2 * h)
+        bw, bh = px2 - px1, py2 - py1
+        if bw < 4 or bh < 4:
+            continue
+        # Crop jersey region: top 30-60% height, center 60% width
+        cy1 = py1 + int(bh * 0.3)
+        cy2 = py1 + int(bh * 0.6)
+        cx1 = px1 + int(bw * 0.2)
+        cx2 = px2 - int(bw * 0.2)
+        crop = frame[max(0, cy1):min(h, cy2), max(0, cx1):min(w, cx2)]
+        if crop.size == 0:
+            continue
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        avg_hue = float(np.median(hsv[:, :, 0]))
+        avg_sat = float(np.median(hsv[:, :, 1]))
+        avg_val = float(np.median(hsv[:, :, 2]))
+        # Convert dominant HSV to hex for display
+        bgr = cv2.cvtColor(np.uint8([[[avg_hue, avg_sat, avg_val]]]), cv2.COLOR_HSV2BGR)
+        b_c, g_c, r_c = int(bgr[0, 0, 0]), int(bgr[0, 0, 1]), int(bgr[0, 0, 2])
+        det["color"] = f"#{r_c:02x}{g_c:02x}{b_c:02x}"
+        hues.append(avg_hue)
+        players.append(det)
+
+    # Cluster into 2 teams using simple threshold on hue
+    team_colors = ["#FE9330", "#2C7A94"]  # fallback
+    if len(hues) >= 2:
+        hue_arr = np.array(hues).reshape(-1, 1).astype(np.float32)
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+        _, labels, centers = cv2.kmeans(hue_arr, 2, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
+        for i, det in enumerate(players):
+            det["team"] = int(labels[i][0])
+        # Derive team representative colours from cluster centers
+        for t in range(2):
+            ch = float(centers[t][0])
+            bgr = cv2.cvtColor(np.uint8([[[ch, 180, 200]]]), cv2.COLOR_HSV2BGR)
+            b_c, g_c, r_c = int(bgr[0, 0, 0]), int(bgr[0, 0, 1]), int(bgr[0, 0, 2])
+            team_colors[t] = f"#{r_c:02x}{g_c:02x}{b_c:02x}"
+
+    return detections, team_colors
+
+
 # ─── AI Service ──────────────────────────────────────────────────────────────
 class AIService:
-    MAX_HISTORY = 5  # number of recent events to include as context
+    MAX_HISTORY = 5
+    ENGAGEMENT_COOLDOWN = 30  # seconds between engagement events
 
     def __init__(self, mode: str = DEFAULT_AI_MODE):
         self.mode = mode
         self.dataset_path = "training_dataset.jsonl"
         self.event_history: List[Dict[str, Any]] = []
+        self.match_info: Dict[str, str] = {}  # {home_team, away_team}
+        self._last_engagement_time: float = 0.0
 
     def clear_history(self) -> None:
         """Reset temporal context (e.g. on new analysis or seek)."""
         self.event_history = []
+        self._last_engagement_time = 0.0
+
+    def identify_match(self, frame: np.ndarray) -> Dict[str, str]:
+        """Ask AI to identify teams from a frame. Stores result in self.match_info."""
+        frame_b64 = frame_to_jpeg_base64(frame)
+        prompt = (
+            "Identify the two football teams in this image from jerseys, logos, "
+            "scoreboard, or any visible clues. Respond ONLY in valid JSON "
+            "(no markdown, no explanation):\n"
+            "{\"home_team\": \"Team Name\", \"away_team\": \"Team Name\"}\n"
+            "If you cannot identify, use descriptive names based on jersey color "
+            "(e.g. \"Red Team\", \"Blue/White Team\")."
+        )
+        if self.mode == "cloud":
+            result = self.call_gpt4o(prompt, frame_b64)
+        else:
+            result = self.call_gemma(prompt, frame_b64)
+        self.match_info = {
+            "home_team": result.get("home_team", "Home"),
+            "away_team": result.get("away_team", "Away"),
+        }
+        return self.match_info
 
     def analyze(self, frame: np.ndarray, teacher_mode: bool = False,
                 crowd_intensity: float = -1) -> Dict[str, Any]:
@@ -86,6 +168,14 @@ class AIService:
         else:
             result = self.call_gemma(prompt, frame_b64)
             result["model_source"] = "gemma (local)"
+
+        # Engagement cooldown — strip if too soon
+        if result.get("engagement"):
+            now = time.time()
+            if now - self._last_engagement_time < self.ENGAGEMENT_COOLDOWN:
+                result["engagement"] = None
+            else:
+                self._last_engagement_time = now
 
         # Store in history for temporal context
         self.event_history.append({
@@ -107,11 +197,20 @@ class AIService:
             "  \"event_type\": \"goal_chance\" | \"goal\" | \"celebration\" | \"normal_play\" | \"crowd_reaction\",\n"
             "  \"tension_score\": 0-10,\n"
             "  \"description\": \"1-2 sentences\",\n"
-            "  \"sentiment\": \"calm\" | \"tense\" | \"euphoric\" | \"frustrated\"\n"
+            "  \"sentiment\": \"calm\" | \"tense\" | \"euphoric\" | \"frustrated\",\n"
+            "  \"engagement\": null | {\"type\": \"poll\" | \"sentiment\" | \"product\", \"text\": \"display text\"}\n"
             "}"
         )
 
         sections: List[str] = [base]
+
+        # Match info
+        if self.match_info:
+            sections.append(
+                f"MATCH: {self.match_info.get('home_team', 'Home')} vs "
+                f"{self.match_info.get('away_team', 'Away')}. "
+                "Use team names in descriptions and engagement text."
+            )
 
         # Audio context
         if crowd_intensity >= 0:
@@ -135,9 +234,18 @@ class AIService:
             sections.append(
                 f"MATCH CONTEXT — Recent events (oldest to newest):\n{context}\n\n"
                 "Use this context to maintain narrative continuity. "
-                "Reference what happened before if relevant (e.g. \"after the corner kick...\", "
-                "\"the team continues pressing...\"). Avoid repeating the same description."
+                "Reference what happened before if relevant. Avoid repeating the same description."
             )
+
+        # Engagement instructions
+        sections.append(
+            "ENGAGEMENT: Optionally include an \"engagement\" field for audience interaction.\n"
+            "- \"poll\": A contextual question (e.g. \"Will they score in the next 5 minutes?\")\n"
+            "- \"sentiment\": A prompt for audience emotion (e.g. \"Rate your excitement!\")\n"
+            "- \"product\": A contextual suggestion (e.g. \"Get the official match jersey!\")\n"
+            "Rules: ONLY when highly relevant. NEVER for normal_play. Max once every ~5 cycles. "
+            "When not relevant, set engagement to null."
+        )
 
         return "\n\n".join(sections)
 
