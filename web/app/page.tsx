@@ -7,8 +7,13 @@ import { BottomPanels } from "@/components/BottomPanels";
 import { EventsSidebar } from "@/components/EventsSidebar";
 import type { MatchEvent } from "@/types/events";
 
-const BACKEND_HTTP = "http://localhost:8080";
-const BACKEND_WS = "ws://localhost:8080/ws";
+const isLocal = typeof window !== "undefined" && window.location.hostname === "localhost";
+const BACKEND_HTTP = isLocal
+  ? "http://localhost:8080"
+  : `${window.location.protocol}//${window.location.host}/api`;
+const BACKEND_WS = isLocal
+  ? "ws://localhost:8080/ws"
+  : `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/ws`;
 
 export default function Page() {
   const [status, setStatus] = useState<"idle" | "analyzing" | "paused">("idle");
