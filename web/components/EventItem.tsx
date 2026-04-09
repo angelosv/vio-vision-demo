@@ -83,7 +83,7 @@ export function EventItem({ event }: { event: MatchEvent }) {
   const style = categoryStyle(event.category);
 
   return (
-    <div className="event-card p-3 rounded-lg border border-brand-border bg-brand-panel/30 flex gap-3">
+    <div className="event-card event-enter p-3 rounded-lg border border-brand-border bg-brand-panel/30 flex gap-3">
       <div className={`w-12 text-xs font-mono pt-0.5 ${style.timeColor}`}>
         {event.timestamp}
       </div>

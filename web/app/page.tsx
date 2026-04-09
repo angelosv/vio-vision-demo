@@ -378,8 +378,8 @@ export default function Page() {
 
       <AlertBanner event={alert} onDismiss={() => setAlert(null)} />
 
-      <main className="flex-1 flex overflow-hidden p-4 gap-4">
-        <div className="flex-1 flex flex-col gap-4 min-w-0">
+      <main className="flex-1 flex overflow-hidden p-4 gap-4 main-layout">
+        <div className="flex-1 flex flex-col gap-3 min-w-0">
           <div className="relative flex-1">
             <VideoPanel
               currentTime={currentTime}
@@ -403,7 +403,9 @@ export default function Page() {
           <BottomPanels detections={detections} tensionHistory={tensionHistory} teamColors={teamColors} ballHistory={ballHistory} />
         </div>
 
-        <EventsSidebar events={events} />
+        <div className="sidebar-panel">
+          <EventsSidebar events={events} />
+        </div>
       </main>
 
       {/* Highlight Reel modal */}

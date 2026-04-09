@@ -51,3 +51,36 @@ body {
   background: rgba(255, 255, 255, 0.03);
   transform: translateX(2px);
 }
+
+/* Event entrance animation */
+@keyframes slideInLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.event-enter {
+  animation: slideInLeft 0.3s ease-out;
+}
+
+/* Responsive: stack layout on small screens */
+@media (max-width: 1024px) {
+  .main-layout {
+    flex-direction: column !important;
+  }
+  .sidebar-panel {
+    width: 100% !important;
+    max-height: 240px;
+  }
+}
+
+@media (max-width: 768px) {
+  .bottom-panels {
+    flex-direction: column !important;
+  }
+}

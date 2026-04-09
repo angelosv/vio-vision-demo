@@ -24,14 +24,14 @@ export function BottomPanels({ detections, tensionHistory, teamColors = [], ball
   const [showHeatmap, setShowHeatmap] = useState(true);
 
   // ── Pitch Control data ──
-  const players = detections.filter((d) => d.label === "Player" || d.label === "GK");
+  const players = detections.filter((d) => d.label === "Player" || d.label === "GK" || d.label === "Referee");
   const ball = detections.find((d) => d.label === "Ball");
   const leftHalf = players.filter((d) => centerX(d) < 0.5).length;
   const rightHalf = players.length - leftHalf;
   const leftPct = players.length > 0 ? Math.round((leftHalf / players.length) * 100) : 50;
 
   return (
-    <div className="shrink-0 flex gap-4">
+    <div className="shrink-0 flex gap-3 bottom-panels">
       {/* ── Pitch Control ── */}
       <div className="flex-1 glass-panel rounded-xl overflow-hidden flex flex-col transition-all duration-300">
         <button
@@ -56,9 +56,9 @@ export function BottomPanels({ detections, tensionHistory, teamColors = [], ball
           </div>
         </button>
         {pitchOpen && (
-          <div className="p-4 flex-1 flex flex-col gap-2">
+          <div className="p-3 flex-1 flex flex-col gap-2">
             {/* Mini pitch */}
-            <div className="w-full h-28 relative border border-white/10 rounded bg-[#1a2e1a] overflow-hidden">
+            <div className="w-full h-24 relative border border-white/10 rounded bg-[#1a2e1a] overflow-hidden">
               {/* Center line + circle */}
               <div className="absolute left-1/2 top-0 bottom-0 w-px bg-white/20" />
               <div className="absolute top-1/2 left-1/2 w-10 h-10 -mt-5 -ml-5 border border-white/15 rounded-full" />
@@ -238,7 +238,7 @@ function MomentumChart({ data }: { data: TensionPoint[] }) {
         <span className="text-brand-muted ml-2">Avg:</span>
         <span className="font-mono text-brand-muted">{avg.toFixed(1)}</span>
       </div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-24 flex-1" preserveAspectRatio="none">
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-20 flex-1" preserveAspectRatio="none">
         {/* Grid lines at 3, 5, 8 */}
         {[3, 5, 8].map((v) => (
           <line key={v} x1={PAD} y1={toY(v)} x2={W - PAD} y2={toY(v)} stroke="white" strokeOpacity={0.07} strokeDasharray="4 4" />

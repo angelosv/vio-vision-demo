@@ -52,11 +52,11 @@ function detectionLabel(det: Detection): string {
   return base;
 }
 
-const SENTIMENT_CONFIG: Record<string, { emoji: string; color: string; label: string }> = {
-  calm: { emoji: "😌", color: "text-blue-400", label: "Calm" },
-  tense: { emoji: "😰", color: "text-yellow-400", label: "Tense" },
-  euphoric: { emoji: "🤩", color: "text-green-400", label: "Euphoric" },
-  frustrated: { emoji: "😤", color: "text-red-400", label: "Frustrated" },
+const SENTIMENT_CONFIG: Record<string, { icon: string; color: string; bg: string; label: string }> = {
+  calm: { icon: "●", color: "text-blue-400", bg: "bg-blue-400", label: "Calm" },
+  tense: { icon: "▲", color: "text-yellow-400", bg: "bg-yellow-400", label: "Tense" },
+  euphoric: { icon: "★", color: "text-green-400", bg: "bg-green-400", label: "Euphoric" },
+  frustrated: { icon: "✕", color: "text-red-400", bg: "bg-red-400", label: "Frustrated" },
 };
 
 /** Find nearest detection frame within tolerance. */
@@ -310,8 +310,9 @@ export function VideoPanel({
             </div>
             {sentiment && SENTIMENT_CONFIG[sentiment] && (
               <div className="bg-black/60 backdrop-blur border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2">
-                <span className={`text-xs ${SENTIMENT_CONFIG[sentiment].color}`}>
-                  {SENTIMENT_CONFIG[sentiment].emoji} {SENTIMENT_CONFIG[sentiment].label}
+                <div className={`w-2 h-2 rounded-full ${SENTIMENT_CONFIG[sentiment].bg} animate-pulse`} />
+                <span className={`text-xs font-medium ${SENTIMENT_CONFIG[sentiment].color}`}>
+                  {SENTIMENT_CONFIG[sentiment].label}
                 </span>
               </div>
             )}
@@ -397,11 +398,19 @@ export function VideoPanel({
 
           <div className="flex justify-between items-center text-xs font-mono text-brand-muted">
             <div className="flex items-center gap-4">
-              <button className="hover:text-white" onClick={onPlayPause}>
-                {isPlaying ? "⏸" : "▶"}
+              <button className="hover:text-white w-6 h-6 flex items-center justify-center" onClick={onPlayPause}>
+                {isPlaying ? (
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><rect x="1" y="1" width="3" height="10" rx="1"/><rect x="8" y="1" width="3" height="10" rx="1"/></svg>
+                ) : (
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><path d="M2 1l9 5-9 5V1z"/></svg>
+                )}
               </button>
-              <button className="hover:text-white" onClick={() => setMuted((m) => !m)}>
-                {muted ? "🔇" : "🔊"}
+              <button className="hover:text-white w-6 h-6 flex items-center justify-center" onClick={() => setMuted((m) => !m)}>
+                {muted ? (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 5L6 9H2v6h4l5 4V5z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+                ) : (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg>
+                )}
               </button>
               <span>
                 {formatTime(isNative ? effectiveTime : currentTime)} / {formatTime(effectiveDuration)}

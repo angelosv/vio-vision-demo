@@ -97,35 +97,8 @@ export function Header({
         </div>
       </div>
 
-      {/* Right: AI mode toggle + status */}
+      {/* Right: status */}
       <div className="w-1/4 flex justify-end items-center gap-3">
-
-        {/* AI Mode toggle */}
-        <div className="flex items-center gap-1 bg-brand-panel border border-brand-border rounded-lg p-1">
-          <button
-            onClick={() => onAIModeChange("cloud")}
-            className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
-              aiMode === "cloud"
-                ? "bg-brand-primary text-white"
-                : "text-brand-muted hover:text-white"
-            }`}
-          >
-            ☁ GPT-4o
-          </button>
-          <button
-            onClick={() => onAIModeChange("local")}
-            className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
-              aiMode === "local"
-                ? "bg-brand-accent text-black"
-                : "text-brand-muted hover:text-white"
-            }`}
-          >
-            ⚡ Gemma
-          </button>
-        </div>
-
-        <div className="w-px h-6 bg-brand-border" />
-
         {/* Status pill */}
         <div className="flex items-center gap-2 px-3 py-1 rounded-full border text-xs font-medium border-brand-success/20 bg-brand-success/10 text-brand-success">
           <div className="w-2 h-2 rounded-full bg-brand-success animate-pulse" />
