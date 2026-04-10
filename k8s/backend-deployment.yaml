@@ -14,13 +14,14 @@ spec:
     metadata:
       labels:
         app: vio-vision-backend
-        version: v0.4.0
+        version: demo
     spec:
       imagePullSecrets:
       - name: reachuqa2
       containers:
       - name: backend
-        image: reachuqa2.azurecr.io/vio-vision-backend:v0.4.0
+        image: reachuqa2.azurecr.io/vio-vision-backend:v0.4.1
+        imagePullPolicy: Always
         ports:
         - containerPort: 8000
           name: http
@@ -35,16 +36,23 @@ spec:
             secretKeyRef:
               name: vio-openai-secret
               key: AZURE_OPENAI_ENDPOINT
+              optional: true
         - name: AZURE_OPENAI_API_KEY
           valueFrom:
             secretKeyRef:
               name: vio-openai-secret
               key: AZURE_OPENAI_API_KEY
+              optional: true
         - name: AZURE_OPENAI_DEPLOYMENT
           value: "gpt-4o"
         - name: AZURE_OPENAI_API_VERSION
           value: "2024-12-01-preview"
-        # Azure Video Indexer (optional — gracefully disabled if absent)
+        # Gemma (local GPU fallback)
+        - name: GEMMA_ENDPOINT
+          value: "http://100.99.128.76:11434/v1/chat/completions"
+        - name: GEMMA_MODEL
+          value: "gemma4:26b"
+        # Azure Video Indexer (optional)
         - name: AZURE_VIDEO_INDEXER_ACCOUNT_ID
           valueFrom:
             secretKeyRef:
@@ -65,20 +73,22 @@ spec:
               optional: true
         resources:
           requests:
-            memory: "1Gi"
-            cpu: "500m"
+            memory: "512Mi"
+            cpu: "250m"
           limits:
-            memory: "3Gi"
-            cpu: "2000m"
+            memory: "2Gi"
+            cpu: "1000m"
         livenessProbe:
           httpGet:
             path: /
             port: 8000
-          initialDelaySeconds: 30
+          initialDelaySeconds: 60
           periodSeconds: 10
+          timeoutSeconds: 5
         readinessProbe:
           httpGet:
             path: /
             port: 8000
-          initialDelaySeconds: 10
+          initialDelaySeconds: 45
           periodSeconds: 5
+          timeoutSeconds: 3

@@ -1,7 +1,7 @@
 # Backend Dockerfile
 FROM python:3.9-slim
 
-# Install system dependencies for OpenCV + ffmpeg (audio extraction)
+# Install system dependencies for OpenCV and ffmpeg (for audio extraction)
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     libgl1 \
