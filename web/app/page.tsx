@@ -39,6 +39,8 @@ export default function Page() {
   // Highlight Reel
   const [highlights, setHighlights] = useState<HighlightMoment[]>([]);
   const [showHighlightReel, setShowHighlightReel] = useState(false);
+  // Sentiment
+  const [sentiment, setSentiment] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -140,6 +142,7 @@ export default function Page() {
 
           // Build event
           const tensionScore = data.tension_score ?? 0;
+          if (data.sentiment) setSentiment(data.sentiment);
           const event: MatchEvent = {
             id: String(data.frame_index ?? Date.now()),
             timestamp: formatTime(frameRef.current, fpsRef.current),
@@ -288,6 +291,16 @@ export default function Page() {
     setTensionHistory([]);
     setBallHistory([]);
     setAlert(null);
+    setVideoUrl(null);
+    setStreamFrames(true);
+    setScoreboard(null);
+    setSceneMarkers([]);
+    setActivePoll(null);
+    triggeredPollsRef.current.clear();
+    setHighlights([]);
+    setShowHighlightReel(false);
+    setSentiment(null);
+    detectionBufferRef.current.clear();
     frameRef.current = 0;
     setCurrentTime(0);
     setStatus("analyzing");
@@ -354,8 +367,8 @@ export default function Page() {
 
       <AlertBanner event={alert} onDismiss={() => setAlert(null)} />
 
-      <main className="flex-1 flex overflow-hidden p-4 gap-4">
-        <div className="flex-1 flex flex-col gap-4 min-w-0">
+      <main className="flex-1 flex overflow-hidden p-4 gap-4 main-layout">
+        <div className="flex-1 flex flex-col gap-3 min-w-0">
           <div className="relative flex-1">
             <VideoPanel
               currentTime={currentTime}
@@ -372,13 +385,16 @@ export default function Page() {
               scoreboard={scoreboard}
               sceneMarkers={sceneMarkers}
               highlightMarkers={highlights.map((h) => ({ timeSec: h.timeSec, category: h.category }))}
+              sentiment={sentiment}
             />
             <SmartPollOverlay poll={activePoll} onDismiss={() => setActivePoll(null)} />
           </div>
           <BottomPanels detections={detections} tensionHistory={tensionHistory} teamColors={teamColors} ballHistory={ballHistory} />
         </div>
 
-        <EventsSidebar events={events} />
+        <div className="sidebar-panel">
+          <EventsSidebar events={events} />
+        </div>
       </main>
 
       {/* Highlight Reel modal */}

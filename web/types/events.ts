@@ -3,7 +3,8 @@ export interface Detection {
   confidence: number;
   box: [number, number, number, number]; // [x1, y1, x2, y2] normalized 0–1
   color?: string;  // hex jersey color
-  team?: number;   // 0 or 1
+  team?: number;   // 0, 1, or -1 (referee)
+  player_id?: number; // persistent tracking ID
 }
 
 export type EventCategory =

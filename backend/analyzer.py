@@ -41,40 +41,54 @@ _LABEL_MAP = {
 }
 
 def detect_objects(frame: np.ndarray) -> List[Dict[str, Any]]:
-    """Run YOLO on a frame and return normalized bounding boxes."""
+    """Run YOLO on a frame and return normalized bounding boxes.
+
+    Filters out crowd detections (very small boxes in the upper portion of frame).
+    """
     model = get_yolo_model()
     h, w = frame.shape[:2]
-    results = model(frame, verbose=False, conf=0.3, iou=0.5)
     detections = []
-    for result in results:
+    for result in model(frame, verbose=False, conf=0.3, iou=0.5):
         for box in result.boxes:
             cls_id = int(box.cls[0])
             raw_label = result.names[cls_id]
             label = _LABEL_MAP.get(raw_label, raw_label)
             conf = float(box.conf[0])
             x1, y1, x2, y2 = box.xyxy[0].tolist()
+            nx1, ny1, nx2, ny2 = x1 / w, y1 / h, x2 / w, y2 / h
+            box_w = nx2 - nx1
+            box_h = ny2 - ny1
+
+            # Filter crowd: very small people in the upper third
+            if label == "Player" and box_h < 0.06 and ny1 < 0.35:
+                label = "Crowd"
+
             detections.append({
                 "label": label,
                 "confidence": round(conf, 2),
-                "box": [x1 / w, y1 / h, x2 / w, y2 / h],
+                "box": [nx1, ny1, nx2, ny2],
             })
     return detections
 
 
 def extract_team_colors(frame: np.ndarray, detections: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[str]]:
-    """Add 'color' (hex) and 'team' (0|1) to player detections via jersey colour.
+    """Classify detections into Team A, Team B, and Referee via jersey colour.
+
+    Uses 3-cluster k-means on HSV hue. The smallest cluster (fewest members)
+    is assigned as referee. Also classifies crowd detections.
 
     Returns (updated_detections, [team0_hex, team1_hex]).
     """
     h, w = frame.shape[:2]
     players = []
-    hues: List[float] = []
+    hsv_features: List[Tuple[float, float, float]] = []
 
     for det in detections:
+        if det["label"] == "Crowd":
+            continue
         if det["label"] not in ("Player", "GK"):
             continue
         x1, y1, x2, y2 = det["box"]
-        # Convert normalised → pixel
         px1, py1 = int(x1 * w), int(y1 * h)
         px2, py2 = int(x2 * w), int(y2 * h)
         bw, bh = px2 - px1, py2 - py1
@@ -92,22 +106,53 @@ def extract_team_colors(frame: np.ndarray, detections: List[Dict[str, Any]]) -> 
         avg_hue = float(np.median(hsv[:, :, 0]))
         avg_sat = float(np.median(hsv[:, :, 1]))
         avg_val = float(np.median(hsv[:, :, 2]))
-        # Convert dominant HSV to hex for display
         bgr = cv2.cvtColor(np.uint8([[[avg_hue, avg_sat, avg_val]]]), cv2.COLOR_HSV2BGR)
         b_c, g_c, r_c = int(bgr[0, 0, 0]), int(bgr[0, 0, 1]), int(bgr[0, 0, 2])
         det["color"] = f"#{r_c:02x}{g_c:02x}{b_c:02x}"
-        hues.append(avg_hue)
+        hsv_features.append((avg_hue, avg_sat, avg_val))
         players.append(det)
 
-    # Cluster into 2 teams using simple threshold on hue
     team_colors = ["#FE9330", "#2C7A94"]  # fallback
-    if len(hues) >= 2:
-        hue_arr = np.array(hues).reshape(-1, 1).astype(np.float32)
+
+    if len(players) >= 4:
+        # 3-cluster: team A, team B, referee
+        feat = np.array([(h, s) for h, s, v in hsv_features], dtype=np.float32)
+        k = min(3, len(players))
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+        _, labels, centers = cv2.kmeans(feat, k, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
+
+        # Count members per cluster
+        counts = [0] * k
+        for lbl in labels:
+            counts[int(lbl[0])] += 1
+
+        # Smallest cluster = referee (usually 1-4 people)
+        sorted_clusters = sorted(range(k), key=lambda c: counts[c])
+        referee_cluster = sorted_clusters[0] if k == 3 else -1
+        team_clusters = [c for c in sorted_clusters if c != referee_cluster][:2]
+
+        for i, det in enumerate(players):
+            cluster = int(labels[i][0])
+            if cluster == referee_cluster:
+                det["label"] = "Referee"
+                det["team"] = -1
+            else:
+                det["team"] = team_clusters.index(cluster) if cluster in team_clusters else 0
+
+        # Derive team colours from the two team cluster centers
+        for idx, tc in enumerate(team_clusters[:2]):
+            ch, cs = float(centers[tc][0]), float(centers[tc][1])
+            bgr = cv2.cvtColor(np.uint8([[[ch, cs, 200]]]), cv2.COLOR_HSV2BGR)
+            b_c, g_c, r_c = int(bgr[0, 0, 0]), int(bgr[0, 0, 1]), int(bgr[0, 0, 2])
+            team_colors[idx] = f"#{r_c:02x}{g_c:02x}{b_c:02x}"
+
+    elif len(players) >= 2:
+        # Fallback: 2-cluster if not enough for 3
+        hue_arr = np.array([h for h, s, v in hsv_features], dtype=np.float32).reshape(-1, 1)
         criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
         _, labels, centers = cv2.kmeans(hue_arr, 2, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
         for i, det in enumerate(players):
             det["team"] = int(labels[i][0])
-        # Derive team representative colours from cluster centers
         for t in range(2):
             ch = float(centers[t][0])
             bgr = cv2.cvtColor(np.uint8([[[ch, 180, 200]]]), cv2.COLOR_HSV2BGR)
@@ -115,6 +160,67 @@ def extract_team_colors(frame: np.ndarray, detections: List[Dict[str, Any]]) -> 
             team_colors[t] = f"#{r_c:02x}{g_c:02x}{b_c:02x}"
 
     return detections, team_colors
+
+
+# ─── Player Tracker ─────────────────────────────────────────────────────────
+
+class PlayerTracker:
+    """Assign persistent IDs to players across frames using position + team."""
+
+    def __init__(self):
+        self._next_id = 1
+        self._tracks: Dict[int, Dict[str, Any]] = {}  # id -> {cx, cy, team, label}
+
+    def reset(self):
+        self._next_id = 1
+        self._tracks.clear()
+
+    def update(self, detections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Match current detections to existing tracks and assign player_id."""
+        players = [d for d in detections if d.get("label") in ("Player", "GK", "Referee")]
+        if not players:
+            return detections
+
+        # Compute centers for current detections
+        current = []
+        for det in players:
+            x1, y1, x2, y2 = det["box"]
+            cx = (x1 + x2) / 2
+            cy = (y1 + y2) / 2
+            current.append({"det": det, "cx": cx, "cy": cy, "team": det.get("team", -1)})
+
+        # Match to existing tracks (greedy nearest-neighbor)
+        used_tracks: set = set()
+        for cur in current:
+            best_id = None
+            best_dist = 0.08  # max distance threshold (normalized coords)
+            for tid, track in self._tracks.items():
+                if tid in used_tracks:
+                    continue
+                # Prefer same team
+                if track.get("team", -1) != cur["team"] and cur["team"] != -1:
+                    continue
+                dist = ((cur["cx"] - track["cx"]) ** 2 + (cur["cy"] - track["cy"]) ** 2) ** 0.5
+                if dist < best_dist:
+                    best_dist = dist
+                    best_id = tid
+            if best_id is not None:
+                cur["det"]["player_id"] = best_id
+                used_tracks.add(best_id)
+                # Update track position
+                self._tracks[best_id] = {"cx": cur["cx"], "cy": cur["cy"],
+                                          "team": cur["team"], "label": cur["det"]["label"]}
+            else:
+                # New player
+                pid = self._next_id
+                self._next_id += 1
+                cur["det"]["player_id"] = pid
+                self._tracks[pid] = {"cx": cur["cx"], "cy": cur["cy"],
+                                      "team": cur["team"], "label": cur["det"]["label"]}
+
+        # Remove stale tracks (not seen in 10 frames → handled by distance threshold)
+        # Keep all tracks; they'll be overwritten when close enough
+        return detections
 
 
 # ─── AI Service ──────────────────────────────────────────────────────────────
