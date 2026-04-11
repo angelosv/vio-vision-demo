@@ -475,6 +475,7 @@ class AIService:
                 azure_endpoint=AZURE_OPENAI_ENDPOINT,
                 api_key=AZURE_OPENAI_API_KEY,
                 api_version=AZURE_OPENAI_API_VERSION,
+                timeout=30.0,  # 30 second timeout for API calls
             )
             response = client.chat.completions.create(
                 model=AZURE_OPENAI_DEPLOYMENT,

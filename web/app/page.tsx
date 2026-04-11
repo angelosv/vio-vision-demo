@@ -10,6 +10,7 @@ import type { MatchEvent, Detection, TensionPoint, SmartPoll, HighlightMoment } 
 import type { DetectionFrame } from "@/components/VideoPanel";
 import { SmartPollOverlay } from "@/components/SmartPollOverlay";
 import { HighlightReel } from "@/components/HighlightReel";
+import { websocketManager } from "@/lib/websocket";
 
 const API_VERSION = "0.4.0";
 
@@ -42,8 +43,6 @@ export default function Page() {
   // Sentiment
   const [sentiment, setSentiment] = useState<string | null>(null);
 
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const frameRef = useRef(0);
   const fpsRef = useRef(25);
   const sessionIdRef = useRef<string | null>(null);
@@ -66,202 +65,197 @@ export default function Page() {
 
   // Send commands to backend via WebSocket
   const sendWsCommand = useCallback((type: string, extra: Record<string, unknown> = {}) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type, ...extra }));
-    }
+    websocketManager.send({ type, ...extra });
   }, []);
 
-  // Connect WebSocket on mount, reconnect if closed
-  const connectWS = useCallback(() => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
-    if (reconnectTimerRef.current) {
-      clearTimeout(reconnectTimerRef.current);
-      reconnectTimerRef.current = null;
-    }
-    const wsUrl = getBackendWS();
-    if (!wsUrl) return;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      if (sessionIdRef.current) {
-        ws.send(JSON.stringify({ type: "join", session_id: sessionIdRef.current }));
-      }
-    };
-
-    ws.onmessage = (msg) => {
-      try {
-        const data = JSON.parse(msg.data);
-        if (data.type === "metadata") {
-          fpsRef.current = data.fps || 25;
-          if (data.api_version) setBackendVersion(data.api_version);
-          if (data.duration > 0) {
-            setTotalTime(Math.floor(data.duration));
-          }
-          // Hybrid playback: capture video URL and mode
-          if (data.video_url) setVideoUrl(data.video_url);
-          setStreamFrames(data.stream_frames ?? true);
-          detectionBufferRef.current.clear();
-        } else if (data.type === "indexer_ready") {
-          // Video Indexer insights arrived
-          if (data.scoreboard) setScoreboard(data.scoreboard);
-          if (data.scenes) setSceneMarkers(data.scenes);
-        } else if (data.type === "event") {
-          frameRef.current = data.frame_index ?? frameRef.current;
-          const frameTime = frameRef.current / fpsRef.current;
-          lastFrameTimeRef.current = frameTime;
-          lastFrameArrivalRef.current = Date.now();
-
-          // Store detections + team colors for BottomPanels
-          setDetections(data.detections ?? []);
-          if (data.team_colors) setTeamColors(data.team_colors);
-
-          // Buffer detections for native playback sync
-          const timeSec = data.time_sec ?? frameTime;
-          const quantizedTime = Math.round(timeSec * 10) / 10;
-          detectionBufferRef.current.set(quantizedTime, {
-            detections: data.detections ?? [],
-            teamColors: data.team_colors ?? [],
-            crowdIntensity: data.crowd_intensity ?? -1,
-          });
-          // Evict old entries (keep last 600 = ~60 seconds at 0.1s resolution)
-          if (detectionBufferRef.current.size > 600) {
-            const keys = Array.from(detectionBufferRef.current.keys()).sort((a, b) => a - b);
-            for (let i = 0; i < keys.length - 600; i++) {
-              detectionBufferRef.current.delete(keys[i]);
-            }
-          }
-
-          // Track ball position for heatmap
-          const ballDet = (data.detections ?? []).find((d: Detection) => d.label === "Ball");
-          if (ballDet) {
-            const bx = (ballDet.box[0] + ballDet.box[2]) / 2;
-            const by = (ballDet.box[1] + ballDet.box[3]) / 2;
-            setBallHistory((prev) => [...prev, { x: bx, y: by }].slice(-500));
-          }
-
-          // Build event
-          const tensionScore = data.tension_score ?? 0;
-          if (data.sentiment) setSentiment(data.sentiment);
-          const event: MatchEvent = {
-            id: String(data.frame_index ?? Date.now()),
-            timestamp: formatTime(frameRef.current, fpsRef.current),
-            title: data.event_type ?? "Event",
-            description: data.description ?? data.raw_model_output?.slice(0, 120),
-            category: mapCategory(data.event_type),
-            tensionScore,
-          };
-          setEvents((prev) => [event, ...prev].slice(0, 100));
-
-          // Track tension for momentum chart
-          if (tensionScore > 0 || data.event_type !== "normal_play") {
-            setTensionHistory((prev) => {
-              const point: TensionPoint = { time: frameTime, score: tensionScore };
-              return [...prev, point].slice(-120);
-            });
-          }
-
-          // Alert for critical events
-          if (data.confirmed_goal || data.confirmed_card || data.confirmed_penalty || tensionScore >= 8) {
-            setAlert(event);
-          }
-
-          // Create engagement event if present
-          if (data.engagement?.type && data.engagement?.text) {
-            const engCategory =
-              data.engagement.type === "poll" ? "poll" as const :
-              data.engagement.type === "sentiment" ? "sentiment_prompt" as const :
-              "product" as const;
-            const engEvent: MatchEvent = {
-              id: `eng-${data.frame_index ?? Date.now()}`,
-              timestamp: formatTime(frameRef.current, fpsRef.current),
-              title: data.engagement.text,
-              category: engCategory,
-            };
-            setEvents((prev) => [engEvent, ...prev].slice(0, 100));
-          }
-
-          // Smart poll handling
-          if (data.smart_poll?.poll_id) {
-            const pollId = data.smart_poll.poll_id;
-            if (!triggeredPollsRef.current.has(pollId) && !activePoll) {
-              triggeredPollsRef.current.add(pollId);
-              setActivePoll(data.smart_poll);
-            }
-          }
-
-          // Collect highlights
-          const isConfirmed = data.confirmed_goal || data.confirmed_card || data.confirmed_penalty;
-          const isHighTension = tensionScore >= 7;
-          const isSignificantEvent = ["goal", "penalty", "red_card", "yellow_card"].includes(data.event_type);
-          if ((isHighTension || isConfirmed || isSignificantEvent) && data.description) {
-            const highlight: HighlightMoment = {
-              id: String(data.frame_index ?? Date.now()),
-              timeSec: data.time_sec ?? frameTime,
-              timestamp: formatTime(data.frame_index ?? 0, fpsRef.current),
-              eventType: data.event_type,
-              description: data.description,
-              tensionScore,
-              category: mapCategory(data.event_type),
-              confirmed: !!isConfirmed,
-            };
-            setHighlights((prev) => {
-              const isDuplicate = prev.some((h) => Math.abs(h.timeSec - highlight.timeSec) < 5);
-              if (isDuplicate) return prev;
-              return [...prev, highlight].sort((a, b) => a.timeSec - b.timeSec);
-            });
-          }
-
-          // Pass frame + detections + audio + team colors to VideoPanel
-          if (data.frame_data) {
-            window.dispatchEvent(new CustomEvent("vio-frame-update", {
-              detail: {
-                frame: data.frame_data,
-                dets: data.detections ?? [],
-                crowdIntensity: data.crowd_intensity ?? -1,
-                teamColors: data.team_colors ?? [],
-              }
-            }));
-          }
-        } else if (data.type === "status" && (data.status === "stopped" || data.status === "finished")) {
-          sessionIdRef.current = null;
-          setStatus("idle");
-          if (data.status === "finished") {
-            setShowHighlightReel(true);
-          }
-        } else if (data.type === "error") {
-          console.error("Backend error:", data.message);
+  // WebSocket message handler
+  const handleWebSocketMessage = useCallback((data: any) => {
+    try {
+      console.log('[WS] Message received, type:', data.type);
+      if (data.type === "metadata") {
+        fpsRef.current = data.fps || 25;
+        if (data.api_version) setBackendVersion(data.api_version);
+        if (data.duration > 0) {
+          setTotalTime(Math.floor(data.duration));
         }
-      } catch (_) {}
-    };
+        // Hybrid playback: capture video URL and mode
+        console.log('[Frontend] Metadata received - stream_frames:', data.stream_frames, 'video_url:', data.video_url);
+        if (data.video_url) setVideoUrl(data.video_url);
+        setStreamFrames(data.stream_frames ?? true);
+        console.log('[Frontend] State set - streamFrames:', data.stream_frames ?? true, 'videoUrl:', data.video_url);
+        detectionBufferRef.current.clear();
+      } else if (data.type === "indexer_ready") {
+        // Video Indexer insights arrived
+        if (data.scoreboard) setScoreboard(data.scoreboard);
+        if (data.scenes) setSceneMarkers(data.scenes);
+      } else if (data.type === "event") {
+        frameRef.current = data.frame_index ?? frameRef.current;
+        const frameTime = frameRef.current / fpsRef.current;
+        lastFrameTimeRef.current = frameTime;
+        lastFrameArrivalRef.current = Date.now();
 
-    ws.onerror = () => {
-      reconnectTimerRef.current = setTimeout(connectWS, 3000);
-    };
-    ws.onclose = () => {
-      reconnectTimerRef.current = setTimeout(connectWS, 3000);
-    };
-  }, []);
+        // Store detections + team colors for BottomPanels
+        setDetections(data.detections ?? []);
+        if (data.team_colors) setTeamColors(data.team_colors);
+
+        // Buffer detections for native playback sync
+        const timeSec = data.time_sec ?? frameTime;
+        const quantizedTime = Math.round(timeSec * 10) / 10;
+        console.log('[Frontend] Buffering detections at', quantizedTime, 's - count:', (data.detections ?? []).length);
+        detectionBufferRef.current.set(quantizedTime, {
+          detections: data.detections ?? [],
+          teamColors: data.team_colors ?? [],
+          crowdIntensity: data.crowd_intensity ?? -1,
+        });
+        console.log('[Frontend] Buffer size:', detectionBufferRef.current.size);
+        // Evict old entries (keep last 600 = ~60 seconds at 0.1s resolution)
+        if (detectionBufferRef.current.size > 600) {
+          const keys = Array.from(detectionBufferRef.current.keys()).sort((a, b) => a - b);
+          for (let i = 0; i < keys.length - 600; i++) {
+            detectionBufferRef.current.delete(keys[i]);
+          }
+        }
+
+        // Track ball position for heatmap
+        const ballDet = (data.detections ?? []).find((d: Detection) => d.label === "Ball");
+        if (ballDet) {
+          const bx = (ballDet.box[0] + ballDet.box[2]) / 2;
+          const by = (ballDet.box[1] + ballDet.box[3]) / 2;
+          setBallHistory((prev) => [...prev, { x: bx, y: by }].slice(-500));
+        }
+
+        // Build event
+        const tensionScore = data.tension_score ?? 0;
+        if (data.sentiment) setSentiment(data.sentiment);
+        const event: MatchEvent = {
+          id: String(data.frame_index ?? Date.now()),
+          timestamp: formatTime(frameRef.current, fpsRef.current),
+          title: data.event_type ?? "Event",
+          description: data.description ?? data.raw_model_output?.slice(0, 120),
+          category: mapCategory(data.event_type),
+          tensionScore,
+        };
+        setEvents((prev) => [event, ...prev].slice(0, 100));
+
+        // Track tension for momentum chart
+        if (tensionScore > 0 || data.event_type !== "normal_play") {
+          setTensionHistory((prev) => {
+            const point: TensionPoint = { time: frameTime, score: tensionScore };
+            return [...prev, point].slice(-120);
+          });
+        }
+
+        // Alert for critical events
+        if (data.confirmed_goal || data.confirmed_card || data.confirmed_penalty || tensionScore >= 8) {
+          setAlert(event);
+        }
+
+        // Create engagement event if present
+        if (data.engagement?.type && data.engagement?.text) {
+          const engCategory =
+            data.engagement.type === "poll" ? "poll" as const :
+            data.engagement.type === "sentiment" ? "sentiment_prompt" as const :
+            "product" as const;
+          const engEvent: MatchEvent = {
+            id: `eng-${data.frame_index ?? Date.now()}`,
+            timestamp: formatTime(frameRef.current, fpsRef.current),
+            title: data.engagement.text,
+            category: engCategory,
+          };
+          setEvents((prev) => [engEvent, ...prev].slice(0, 100));
+        }
+
+        // Smart poll handling
+        if (data.smart_poll?.poll_id) {
+          const pollId = data.smart_poll.poll_id;
+          if (!triggeredPollsRef.current.has(pollId) && !activePoll) {
+            triggeredPollsRef.current.add(pollId);
+            setActivePoll(data.smart_poll);
+          }
+        }
+
+        // Collect highlights
+        const isConfirmed = data.confirmed_goal || data.confirmed_card || data.confirmed_penalty;
+        const isHighTension = tensionScore >= 7;
+        const isSignificantEvent = ["goal", "penalty", "red_card", "yellow_card"].includes(data.event_type);
+        if ((isHighTension || isConfirmed || isSignificantEvent) && data.description) {
+          const highlight: HighlightMoment = {
+            id: String(data.frame_index ?? Date.now()),
+            timeSec: data.time_sec ?? frameTime,
+            timestamp: formatTime(data.frame_index ?? 0, fpsRef.current),
+            eventType: data.event_type,
+            description: data.description,
+            tensionScore,
+            category: mapCategory(data.event_type),
+            confirmed: !!isConfirmed,
+          };
+          setHighlights((prev) => {
+            const isDuplicate = prev.some((h) => Math.abs(h.timeSec - highlight.timeSec) < 5);
+            if (isDuplicate) return prev;
+            return [...prev, highlight].sort((a, b) => a.timeSec - b.timeSec);
+          });
+        }
+
+        // Pass frame + detections + audio + team colors to VideoPanel
+        if (data.frame_data) {
+          window.dispatchEvent(new CustomEvent("vio-frame-update", {
+            detail: {
+              frame: data.frame_data,
+              dets: data.detections ?? [],
+              crowdIntensity: data.crowd_intensity ?? -1,
+              teamColors: data.team_colors ?? [],
+            }
+          }));
+        }
+      } else if (data.type === "status" && (data.status === "stopped" || data.status === "finished")) {
+        sessionIdRef.current = null;
+        setStatus("idle");
+        if (data.status === "finished") {
+          setShowHighlightReel(true);
+        }
+      } else if (data.type === "error") {
+        console.error("Backend error:", data.message);
+      }
+    } catch (err) {
+      console.error('[WS] Error handling message:', err);
+    }
+  }, [activePoll]);
 
   useEffect(() => {
-    connectWS();
+    console.log('[WS Singleton] Component mount - connecting');
+    const wsUrl = getBackendWS();
 
+    // Connect using singleton
+    websocketManager.connect(wsUrl);
+
+    // Register message handler
+    websocketManager.addMessageHandler(handleWebSocketMessage);
+
+    // Handle page unload with sendBeacon for reliable delivery
     const handleUnload = () => {
-      if (sessionIdRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: "stop" }));
+      console.log('[WS Singleton] Page unload - sending stop via sendBeacon');
+      if (sessionIdRef.current) {
+        // sendBeacon is more reliable than fetch during page unload
+        const blob = new Blob(
+          [JSON.stringify({ session_id: sessionIdRef.current })],
+          { type: 'application/json' }
+        );
+        navigator.sendBeacon(`${getBackendHTTP()}/stop`, blob);
       }
     };
     window.addEventListener("beforeunload", handleUnload);
 
     return () => {
+      console.log('[WS Singleton] Component cleanup');
       window.removeEventListener("beforeunload", handleUnload);
-      if (sessionIdRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: "stop" }));
-      }
-      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
-      wsRef.current?.close();
+
+      // Unregister message handler
+      websocketManager.removeMessageHandler(handleWebSocketMessage);
+
+      // Note: We don't disconnect the singleton on component unmount
+      // because it's a global singleton that may be used by other components
     };
-  }, [connectWS]);
+  }, [handleWebSocketMessage]);
 
   // Smooth progress bar (legacy mode only — native mode uses video.currentTime)
   useEffect(() => {
@@ -285,6 +279,14 @@ export default function Page() {
     const effectiveUrl = url ?? sourceUrl;
     if (!effectiveUrl) return;
 
+    // ALWAYS stop any existing session first (clean slate)
+    if (sessionIdRef.current) {
+      console.log('[Frontend] Stopping previous session before starting new one');
+      await handleStop();
+      // Small pause to ensure cleanup completes
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
     setEvents([]);
     setDetections([]);
     setTeamColors([]);
@@ -307,20 +309,44 @@ export default function Page() {
 
     try {
       // Direct call to our FastAPI backend
-      await fetch(`${getBackendHTTP()}/start`, {
+      const response = await fetch(`${getBackendHTTP()}/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: effectiveUrl, ai_mode: aiMode }),
       });
+
+      const data = await response.json();
+      if (data.session_id) {
+        console.log('[Frontend] Got session_id from backend:', data.session_id);
+        sessionIdRef.current = data.session_id;
+
+        // Send join message to WebSocket
+        console.log('[Frontend] Sending join message to WebSocket');
+        websocketManager.send({ type: "join", session_id: data.session_id });
+      }
     } catch (e) {
       console.error("Failed to start:", e);
       setStatus("idle");
     }
   };
 
-  const handleStop = () => {
+  const handleStop = async () => {
     if (sessionIdRef.current) {
+      console.log('[Frontend] Stopping session via HTTP:', sessionIdRef.current);
+      // 1. Send stop via HTTP (guaranteed delivery)
+      try {
+        await fetch(`${getBackendHTTP()}/stop`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionIdRef.current }),
+        });
+      } catch (err) {
+        console.error('[Frontend] Failed to stop session via HTTP:', err);
+      }
+
+      // 2. Also send via WebSocket (redundancy)
       sendWsCommand("stop");
+
       sessionIdRef.current = null;
     }
     setStatus("idle");

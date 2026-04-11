@@ -105,10 +105,55 @@ export function VideoPanel({
   const currDetectionsRef = useRef<{ time: number; dets: Detection[] }>({ time: 0, dets: [] });
   const [interpolatedDets, setInterpolatedDets] = useState<Detection[]>([]);
 
+  // Track if we've auto-started native playback
+  const autoStartedRef = useRef(false);
+  // Track if video is paused waiting for detections to arrive
+  const waitingForDetectionsRef = useRef(false);
+
   const isNative = !!videoUrl;
   const effectiveDuration = isNative && videoDuration > 0 ? videoDuration : totalTime;
   const effectiveTime = isNative && videoRef.current ? videoRef.current.currentTime : currentTime;
   const progress = effectiveDuration > 0 ? (effectiveTime / effectiveDuration) * 100 : 0;
+
+  // Debug logging
+  useEffect(() => {
+    console.log('[VideoPanel] Mode changed - isNative:', isNative, 'videoUrl:', videoUrl, 'buffer size:', detectionBuffer?.size);
+  }, [isNative, videoUrl, detectionBuffer]);
+
+  // Auto-start native video once detections are buffered
+  useEffect(() => {
+    if (!isNative || !videoRef.current || !detectionBuffer || autoStartedRef.current) return;
+
+    // Wait for at least 5 detection frames to ensure smooth playback
+    if (detectionBuffer.size >= 5) {
+      console.log('[VideoPanel] Auto-starting playback - buffer ready with', detectionBuffer.size, 'frames');
+      videoRef.current.play().catch((err) => {
+        console.error('[VideoPanel] Failed to auto-start:', err);
+      });
+      autoStartedRef.current = true;
+    }
+  }, [isNative, detectionBuffer, detectionBuffer?.size]);
+
+  // Resume video when buffer has detections ahead of current time
+  useEffect(() => {
+    if (!isNative || !videoRef.current || !detectionBuffer || !waitingForDetectionsRef.current) return;
+
+    const currentTime = videoRef.current.currentTime;
+    const quantized = Math.round(currentTime * 10) / 10;
+
+    // Check if we have detections ahead of current time
+    const times = Array.from(detectionBuffer.keys()).sort((a, b) => a - b);
+    const futureDetections = times.filter(t => t >= quantized);
+
+    // Resume if we have at least 3 detection frames ahead
+    if (futureDetections.length >= 3) {
+      console.log('[VideoPanel] Resuming playback - buffer has', futureDetections.length, 'frames ahead');
+      videoRef.current.play().catch((err) => {
+        console.error('[VideoPanel] Failed to resume:', err);
+      });
+      waitingForDetectionsRef.current = false;
+    }
+  }, [isNative, detectionBuffer, detectionBuffer?.size]);
 
   // Interpolate bounding boxes between two detection frames
   const interpolateDetections = useCallback((t: number) => {
@@ -172,6 +217,7 @@ export function VideoPanel({
     const frame =
       detectionBuffer.get(quantized) ?? findNearest(detectionBuffer, quantized, 0.5);
     if (frame) {
+      console.log('[VideoPanel] Found detections at', quantized, 's - count:', frame.detections.length);
       // Check if this is a new detection frame
       if (frame.detections !== currDetectionsRef.current.dets) {
         prevDetectionsRef.current = currDetectionsRef.current;
@@ -180,12 +226,28 @@ export function VideoPanel({
       }
       setCrowdIntensity(frame.crowdIntensity);
       interpolateDetections(t);
+      waitingForDetectionsRef.current = false;
+    } else {
+      console.log('[VideoPanel] No detections found at', quantized, 's - buffer size:', detectionBuffer.size);
+      // Pause video and wait for more detections to arrive
+      if (!waitingForDetectionsRef.current && videoRef.current && !videoRef.current.paused) {
+        console.log('[VideoPanel] Pausing video - waiting for detections to catch up');
+        videoRef.current.pause();
+        waitingForDetectionsRef.current = true;
+      }
     }
   }, [detectionBuffer, onTimeChange, interpolateDetections]);
 
   const handleMetadataLoaded = () => {
     if (videoRef.current) {
+      console.log('[VideoPanel] Video metadata loaded, duration:', videoRef.current.duration);
       setVideoDuration(videoRef.current.duration);
+      // Reset to start and PAUSE - wait for detections to arrive
+      videoRef.current.currentTime = 0;
+      videoRef.current.pause();
+      autoStartedRef.current = false; // Reset auto-start flag for new video
+      waitingForDetectionsRef.current = false; // Reset waiting flag
+      console.log('[VideoPanel] Reset video to time 0 and paused - waiting for detections');
     }
   };
 
@@ -229,6 +291,7 @@ export function VideoPanel({
               src={videoUrl!}
               className="w-full h-full object-contain"
               muted={muted}
+              autoPlay
               playsInline
               preload="auto"
               onTimeUpdate={handleTimeUpdate}
@@ -251,7 +314,7 @@ export function VideoPanel({
             const label = detectionLabel(det);
             return (
               <div
-                key={det.player_id ?? i}
+                key={`det-${i}-${det.player_id ?? 'unknown'}`}
                 className="absolute pointer-events-none transition-all duration-150 ease-linear"
                 style={{
                   left: `${x1 * 100}%`,
