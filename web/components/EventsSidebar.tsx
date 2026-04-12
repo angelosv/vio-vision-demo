@@ -10,6 +10,8 @@ interface EventsSidebarProps {
 
 const CATEGORY_FILTERS: { label: string; value: EventCategory | "all" }[] = [
   { label: "All", value: "all" },
+  { label: "Narrative", value: "narrative" },
+  { label: "Milestone", value: "milestone" },
   { label: "Critical", value: "critical" },
   { label: "Key", value: "key_action" },
   { label: "Cards", value: "card" },

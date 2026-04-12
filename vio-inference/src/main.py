@@ -36,6 +36,7 @@ from jersey_ocr import JerseyOcr
 from event_detector import EventDetector
 from ai_enrichment import AIEnrichment
 from audio_analyzer import AudioAnalyzer
+from context_engine import MatchContext
 
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -81,6 +82,7 @@ class InferenceSession:
         self.ocr = JerseyOcr()
         self.detector = EventDetector(session_id)
         self.enrichment = AIEnrichment()
+        self.context = MatchContext(session_id)
         self.audio: Optional[AudioAnalyzer] = None
         self.audio_loading = False
         self.last_event_time = 0.0
@@ -268,17 +270,25 @@ async def _infer_frame(
     # Audio crowd intensity (if extracted)
     crowd = session.audio.get_crowd_intensity(time_sec) if session.audio else -1.0
 
+    # ─── Feed MatchContext with accumulated state ──────────────────────────
+    # Also merge the AI-refined event (after enrichment) back in — we do that
+    # below. For now ingest the raw heuristic events so context tracks reality
+    # even if enrichment gets skipped by rate limit.
+    context_events = session.context.ingest(events, tracks_out, possession, time_sec)
+    match_state_snapshot = session.context.snapshot()
+    match_state_text = session.context.compact_text()
+
     # AI enrichment — only fires on significant events / high tension
     enriched = None
     if session.enrichment.enabled:
         enriched = await session.enrichment.maybe_enrich(
             frame, heuristic_event, tension, crowd, time_sec, possession,
+            match_context=match_state_text,
         )
 
     # Merge heuristic + AI event
     event_out = heuristic_event
     if enriched:
-        # AI can override/refine the event type + description
         event_out = {
             **(heuristic_event or {}),
             "event_type": enriched.get("event_type") or (heuristic_event or {}).get("event_type", "normal_play"),
@@ -286,6 +296,19 @@ async def _infer_frame(
             "confirmed": enriched.get("confirmed", False),
             "tension_score": tension,
         }
+        # Re-ingest the AI-refined event so the counters get the right type
+        # (e.g., heuristic said "stoppage" but AI said "yellow_card" — stat the card)
+        if enriched.get("event_type") and enriched["event_type"] != (heuristic_event or {}).get("event_type"):
+            session.context.ingest(
+                [{
+                    "event_type": enriched["event_type"],
+                    "team": (heuristic_event or {}).get("team"),
+                    "description": enriched.get("description"),
+                    "tension_score": tension,
+                    "confirmed": enriched.get("confirmed", False),
+                }],
+                tracks_out, possession, time_sec,
+            )
 
     payload = {
         "session_id": session.session_id,
@@ -299,13 +322,66 @@ async def _infer_frame(
         "event": event_out,
         "crowd_intensity": crowd,
         "sentiment": enriched.get("sentiment") if enriched else None,
+        "context": match_state_snapshot,
     }
 
-    # Publish to gateway via Redis pub/sub
     await redis_client.publish(
         f"session:{session.session_id}:detections",
         json.dumps(payload),
     )
+
+    # Emit milestone events (player_milestone / team_milestone) as separate
+    # payloads so they each land in the sidebar with their own row.
+    for ms in context_events:
+        ms_payload = {
+            "session_id": session.session_id,
+            "frame_index": frame_idx,
+            "timestamp_ms": timestamp_ms,
+            "frame_time_sec": time_sec,
+            "tracks": tracks_out,
+            "ball": ball_out,
+            "team_colors": team_colors,
+            "possession": possession,
+            "event": ms,
+            "crowd_intensity": crowd,
+            "sentiment": None,
+            "context": match_state_snapshot,
+        }
+        await redis_client.publish(
+            f"session:{session.session_id}:detections",
+            json.dumps(ms_payload),
+        )
+
+    # ─── Periodic narrative (every ~2 min of match time) ──────────────────
+    if session.enrichment.enabled and session.context.should_narrate(time_sec):
+        session.context.mark_narrated(time_sec)
+        narrative_text = await session.enrichment.generate_narrative(
+            frame, match_state_text,
+        )
+        if narrative_text:
+            narrative_payload = {
+                "session_id": session.session_id,
+                "frame_index": frame_idx,
+                "timestamp_ms": timestamp_ms,
+                "frame_time_sec": time_sec,
+                "tracks": tracks_out,
+                "ball": ball_out,
+                "team_colors": team_colors,
+                "possession": possession,
+                "event": {
+                    "event_type": "match_narrative",
+                    "description": narrative_text,
+                    "tension_score": tension,
+                    "confirmed": False,
+                },
+                "crowd_intensity": crowd,
+                "sentiment": enriched.get("sentiment") if enriched else None,
+                "context": match_state_snapshot,
+            }
+            await redis_client.publish(
+                f"session:{session.session_id}:detections",
+                json.dumps(narrative_payload),
+            )
 
     session.frames_processed += 1
     m_frames_processed.inc()

@@ -62,6 +62,20 @@ function categoryStyle(category: MatchEvent["category"]): {
           "border-slate-500/30 text-slate-400 bg-slate-500/10",
         timeColor: "text-slate-400",
       };
+    case "narrative":
+      return {
+        label: "Narrative",
+        className:
+          "border-purple-400/40 text-purple-300 bg-purple-500/10",
+        timeColor: "text-purple-300",
+      };
+    case "milestone":
+      return {
+        label: "Milestone",
+        className:
+          "border-amber-500/40 text-amber-400 bg-amber-500/10",
+        timeColor: "text-amber-400",
+      };
     case "sentiment":
       return {
         label: "Sentiment",

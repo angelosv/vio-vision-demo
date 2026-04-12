@@ -6,9 +6,10 @@ import { VideoPanel } from "@/components/VideoPanel";
 import { BottomPanels } from "@/components/BottomPanels";
 import { EventsSidebar } from "@/components/EventsSidebar";
 import { LiveDataFeed } from "@/components/LiveDataFeed";
+import { MatchContextPanel } from "@/components/MatchContextPanel";
 import type {
   MatchEvent, TrackedObject, Ball, Possession, TensionPoint,
-  HighlightMoment, EventType, EventCategory,
+  HighlightMoment, EventType, EventCategory, MatchState,
 } from "@/types/events";
 import { HighlightReel } from "@/components/HighlightReel";
 
@@ -43,6 +44,8 @@ export default function Page() {
   const [crowdIntensity, setCrowdIntensity] = useState(-1);
   // Live data feed (raw WS messages for demo)
   const [wsMessages, setWsMessages] = useState<any[]>([]);
+  // Match context (Sprint 4) — score, minute, team stats, momentum
+  const [matchState, setMatchState] = useState<MatchState | null>(null);
   // Dedup for sentiment-change events (only emit on transition)
   const prevSentimentRef = useRef<string | null>(null);
   // Dedup possession milestones (once per minute per team)
@@ -153,6 +156,7 @@ export default function Page() {
         setBall(data.ball ?? null);
         if (data.team_colors) setTeamColors(data.team_colors);
         if (data.possession) setPossession(data.possession);
+        if (data.context) setMatchState(data.context);
         if (typeof data.crowd_intensity === "number") {
           setCrowdIntensity(data.crowd_intensity);
         }
@@ -324,6 +328,7 @@ export default function Page() {
     setSentiment(null);
     setCrowdIntensity(-1);
     setWsMessages([]);
+    setMatchState(null);
     prevSentimentRef.current = null;
     triggeredMilestonesRef.current.clear();
     frameRef.current = 0;
@@ -425,9 +430,12 @@ export default function Page() {
           />
         </div>
 
-        <div className="sidebar-panel flex gap-3">
-          <EventsSidebar events={events} />
-          <LiveDataFeed messages={wsMessages} />
+        <div className="sidebar-panel flex flex-col gap-3 w-[26rem] shrink-0">
+          <MatchContextPanel state={matchState} teamColors={teamColors} />
+          <div className="flex-1 flex gap-3 min-h-0">
+            <EventsSidebar events={events} />
+            <LiveDataFeed messages={wsMessages} />
+          </div>
         </div>
       </main>
 
@@ -475,6 +483,8 @@ function mapCategory(eventType?: string): EventCategory {
   if (t === "possession_change" || t === "possession_milestone") return "possession";
   if (t === "stoppage" || t === "out_of_bounds") return "stoppage";
   if (t === "sentiment_change" || t === "crowd_reaction") return "sentiment";
+  if (t === "match_narrative") return "narrative";
+  if (t === "player_milestone") return "milestone";
   if (t === "poll") return "poll";
   if (t === "sentiment_prompt") return "sentiment_prompt";
   if (t === "product") return "product";

@@ -80,8 +80,14 @@ class AIEnrichment:
         crowd_intensity: float,
         time_sec: float,
         possession: Optional[Dict[str, Any]] = None,
+        match_context: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Decide if this frame warrants a GPT-4o call, and if so, make it."""
+        """Decide if this frame warrants a GPT-4o call, and if so, make it.
+
+        match_context is a compact text summary of accumulated match state
+        (from MatchContext.compact_text()) — injected into the prompt so the
+        AI knows score, cards, momentum, and recent events.
+        """
         if not self.enabled:
             return None
 
@@ -104,7 +110,8 @@ class AIEnrichment:
         # Run the blocking SDK call off the event loop
         try:
             enriched = await asyncio.to_thread(
-                self._call_gpt4o, frame, heuristic_event, tension, crowd_intensity, possession,
+                self._call_gpt4o, frame, heuristic_event, tension,
+                crowd_intensity, possession, match_context,
             )
         except Exception as e:
             print(f"[ai_enrichment] call failed: {e}")
@@ -122,6 +129,64 @@ class AIEnrichment:
 
         return enriched
 
+    # ─── Narrative (periodic match summary) ────────────────────────────────
+
+    async def generate_narrative(
+        self,
+        frame: np.ndarray,
+        match_context: str,
+    ) -> Optional[str]:
+        """Compose a broadcast-style narrative summary from accumulated state.
+
+        Called every NARRATIVE_INTERVAL_SEC of match time (not wall-clock).
+        Uses a dedicated prompt that optimizes for coherence and journalist-
+        grade phrasing, not event classification.
+        """
+        if not self.enabled:
+            return None
+        try:
+            return await asyncio.to_thread(
+                self._call_narrative, frame, match_context,
+            )
+        except Exception as e:
+            print(f"[ai_enrichment] narrative call failed: {e}")
+            return None
+
+    def _call_narrative(self, frame: np.ndarray, match_context: str) -> Optional[str]:
+        frame_b64 = self._frame_to_b64(frame)
+        prompt = (
+            "You are a live football commentator writing a brief match-status "
+            "update for viewers tuning in. Based on the accumulated match "
+            "state below and the current frame, write exactly ONE or TWO "
+            "sentences that capture:\n"
+            "- Current score and which team is dominating\n"
+            "- A key recent development (last 5 minutes)\n"
+            "- Tone matching the momentum (tense / euphoric / frustrated / calm)\n\n"
+            "Output ONLY the sentences, no JSON, no quotes, no prefix.\n\n"
+            f"MATCH STATE:\n{match_context}"
+        )
+        resp = self._client.chat.completions.create(
+            model=AZURE_OPENAI_DEPLOYMENT,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{frame_b64}",
+                            "detail": "low",
+                        },
+                    },
+                ],
+            }],
+            max_tokens=150,
+            temperature=0.5,  # slightly warmer for narrative voice
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        # Trim any accidental quotes the model adds
+        return text.strip('"').strip("'") or None
+
     # ─── Internals ─────────────────────────────────────────────────────────
 
     def _call_gpt4o(
@@ -131,9 +196,12 @@ class AIEnrichment:
         tension: float,
         crowd_intensity: float,
         possession: Optional[Dict[str, Any]],
+        match_context: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         frame_b64 = self._frame_to_b64(frame)
-        prompt = self._build_prompt(heuristic_event, tension, crowd_intensity, possession)
+        prompt = self._build_prompt(
+            heuristic_event, tension, crowd_intensity, possession, match_context,
+        )
 
         resp = self._client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
@@ -162,6 +230,7 @@ class AIEnrichment:
         tension: float,
         crowd_intensity: float,
         possession: Optional[Dict[str, Any]],
+        match_context: Optional[str] = None,
     ) -> str:
         sections = [
             "You are a live football broadcast analyst. You are watching ONE frame "
@@ -208,7 +277,11 @@ class AIEnrichment:
                 f"{possession.get('away_percent', 50)}% away)."
             )
 
-        if self._history:
+        # Match-level accumulated context — the authoritative state.
+        # Takes precedence over self._history (which is just last 3 AI calls).
+        if match_context:
+            sections.append(f"MATCH CONTEXT:\n{match_context}")
+        elif self._history:
             recent = "\n".join(
                 f"  - [{h['event_type']}] {h['description']}" for h in self._history[-3:]
             )

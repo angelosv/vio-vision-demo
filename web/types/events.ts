@@ -46,10 +46,53 @@ export type EventType =
   | "yellow_card" | "red_card" | "penalty" | "offside"
   | "substitution" | "free_kick"
   | "normal_play" | "crowd_reaction"
+  // Context engine (Sprint 4)
+  | "match_narrative" | "player_milestone"
   // System / engagement
   | "sentiment_change" | "tension_spike" | "possession_milestone"
   | "poll" | "sentiment_prompt" | "product"
   | "system" | "error";
+
+// Per-team accumulated stats
+export interface TeamStats {
+  goals: number;
+  shots: number;
+  corners: number;
+  fouls: number;
+  yellow_cards: number;
+  red_cards: number;
+  substitutions: number;
+}
+
+// Momentum derived from rolling possession window
+export interface Momentum {
+  direction: "home_dominant" | "away_dominant" | "balanced";
+  home_percent: number;
+  away_percent: number;
+  window_sec: number;
+}
+
+// Full MatchState snapshot attached to every frame payload
+export interface MatchState {
+  minute: number | null;
+  score: { home: number; away: number } | null;
+  teams: { home: TeamStats; away: TeamStats };
+  momentum: Momentum;
+  recent_events: Array<{
+    time_sec: number;
+    type: string;
+    team: string | null;
+    tension: number;
+    confirmed: boolean;
+  }>;
+  players_flagged: Array<{
+    track_id: number;
+    team: string;
+    jersey: string;
+    yellow_cards: number;
+    fouls: number;
+  }>;
+}
 
 export interface MatchEventData {
   type: EventType;
@@ -72,6 +115,7 @@ export interface MatchFramePayload {
   event: MatchEventData | null;
   crowd_intensity: number;
   sentiment: "calm" | "tense" | "euphoric" | "frustrated" | null;
+  context?: MatchState;
 }
 
 // ─── Frontend-facing types ────────────────────────────────────────────
@@ -80,6 +124,7 @@ export interface MatchFramePayload {
 export type EventCategory =
   | "match" | "key_action" | "critical" | "card" | "foul" | "set_piece"
   | "possession" | "stoppage" | "sentiment"
+  | "narrative" | "milestone"
   | "poll" | "sentiment_prompt" | "product"
   | "system";
 
