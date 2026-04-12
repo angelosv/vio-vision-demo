@@ -2,6 +2,21 @@ VERSION ?= v0.5.0
 ACR = reachuqa2.azurecr.io
 NAMESPACE = vio-demo
 
+# ── Proto generation ───────────────────────────────────────────────
+
+.PHONY: proto
+proto: ## Generate gRPC Python stubs from shared/proto/*.proto
+	python -m grpc_tools.protoc \
+	  -I=shared/proto \
+	  --python_out=vio-gateway/src/proto \
+	  --grpc_python_out=vio-gateway/src/proto \
+	  shared/proto/match_events.proto
+	@# Fix relative import for package-style layout
+	@sed -i.bak 's/^import match_events_pb2/from . import match_events_pb2/' \
+	  vio-gateway/src/proto/match_events_pb2_grpc.py
+	@rm -f vio-gateway/src/proto/match_events_pb2_grpc.py.bak
+	@touch vio-gateway/src/proto/__init__.py
+
 # ── Local Development ──────────────────────────────────────────────
 
 .PHONY: up

@@ -5,6 +5,7 @@ import { Header, AIMode } from "@/components/Header";
 import { VideoPanel } from "@/components/VideoPanel";
 import { BottomPanels } from "@/components/BottomPanels";
 import { EventsSidebar } from "@/components/EventsSidebar";
+import { LiveDataFeed } from "@/components/LiveDataFeed";
 import { AlertBanner } from "@/components/AlertBanner";
 import type { MatchEvent, Detection, TensionPoint, SmartPoll, HighlightMoment } from "@/types/events";
 import type { DetectionFrame } from "@/components/VideoPanel";
@@ -41,6 +42,8 @@ export default function Page() {
   const [showHighlightReel, setShowHighlightReel] = useState(false);
   // Sentiment
   const [sentiment, setSentiment] = useState<string | null>(null);
+  // Live data feed (raw WS messages for demo)
+  const [wsMessages, setWsMessages] = useState<any[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -92,6 +95,8 @@ export default function Page() {
     ws.onmessage = (msg) => {
       try {
         const data = JSON.parse(msg.data);
+        // Live data feed: keep last 200 messages for demo panel
+        setWsMessages((prev) => [...prev, data].slice(-200));
         if (data.type === "metadata") {
           fpsRef.current = data.fps || 25;
           if (data.api_version) setBackendVersion(data.api_version);
@@ -305,6 +310,7 @@ export default function Page() {
     setHighlights([]);
     setShowHighlightReel(false);
     setSentiment(null);
+    setWsMessages([]);
     detectionBufferRef.current.clear();
     frameRef.current = 0;
     setCurrentTime(0);
@@ -397,8 +403,9 @@ export default function Page() {
           <BottomPanels detections={detections} tensionHistory={tensionHistory} teamColors={teamColors} ballHistory={ballHistory} />
         </div>
 
-        <div className="sidebar-panel">
+        <div className="sidebar-panel flex gap-3">
           <EventsSidebar events={events} />
+          <LiveDataFeed messages={wsMessages} />
         </div>
       </main>
 

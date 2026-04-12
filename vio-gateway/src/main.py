@@ -18,6 +18,7 @@ import httpx
 import redis.asyncio as aioredis
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 try:
@@ -25,6 +26,9 @@ try:
     load_dotenv()
 except ImportError:
     pass
+
+from database import Database
+from grpc_server import serve_grpc
 
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -104,6 +108,12 @@ class ConnectionManager:
                     if channel.endswith(":frames"):
                         # Forward metadata / end events to clients
                         if data.get("type") == "metadata":
+                            # Persist session row
+                            asyncio.create_task(db.create_session(
+                                session_id=session_id,
+                                url=data.get("url", ""),
+                                source_type=data.get("source_type"),
+                            ))
                             await self.broadcast(session_id, {
                                 "type": "metadata",
                                 "api_version": API_VERSION,
@@ -117,13 +127,23 @@ class ConnectionManager:
                                 "match_info": {},
                             })
                         elif data.get("type") == "end":
+                            asyncio.create_task(db.end_session(
+                                session_id=session_id,
+                                duration_sec=data.get("duration_sec", 0),
+                            ))
                             await self.broadcast(session_id, {
                                 "type": "status",
                                 "status": "finished",
                             })
                     else:
                         # Detection payload — transform for legacy frontend
-                        await self.broadcast(session_id, _convert_detection_payload(data))
+                        legacy = _convert_detection_payload(data)
+                        # Persist events that matter (non-normal_play or high tension)
+                        evt_type = legacy.get("event_type", "normal_play")
+                        tension = legacy.get("tension_score", 0) or 0
+                        if evt_type != "normal_play" or tension >= 3:
+                            asyncio.create_task(db.save_event(session_id, legacy))
+                        await self.broadcast(session_id, legacy)
                 except Exception as e:
                     print(f"[gateway] broadcast error: {e}")
         except asyncio.CancelledError:
@@ -180,6 +200,7 @@ def _convert_detection_payload(data: dict) -> dict:
 
 manager = ConnectionManager()
 redis_client: Optional[aioredis.Redis] = None
+db = Database()
 
 
 @app.on_event("startup")
@@ -188,12 +209,19 @@ async def startup():
     redis_client = aioredis.from_url(REDIS_URL, decode_responses=False)
     print(f"[gateway] connected to Redis: {REDIS_URL}")
     print(f"[gateway] ingestion service: {INGESTION_URL}")
+    await db.init()
+    # Start gRPC server in parallel (non-blocking)
+    app.state.grpc_server = await serve_grpc(redis_client, db)
 
 
 @app.on_event("shutdown")
 async def shutdown():
+    grpc_server = getattr(app.state, "grpc_server", None)
+    if grpc_server:
+        await grpc_server.stop(grace=2)
     if redis_client:
         await redis_client.close()
+    await db.close()
 
 
 # ── REST API ────────────────────────────────────────────────────────────
@@ -262,9 +290,9 @@ async def stop(session_id: str):
             raise HTTPException(502, f"Ingestion service error: {e}")
 
 
-@app.get("/api/sessions")
-async def list_sessions():
-    """List active sessions (from ingestion service)."""
+@app.get("/api/sessions/active")
+async def list_active_sessions():
+    """List currently-running sessions (from ingestion service)."""
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             r = await client.get(f"{INGESTION_URL}/sessions")
@@ -272,6 +300,58 @@ async def list_sessions():
             return r.json()
         except httpx.HTTPError as e:
             raise HTTPException(502, f"Ingestion service error: {e}")
+
+
+@app.get("/api/sessions")
+async def list_sessions(limit: int = 50, offset: int = 0, status: Optional[str] = None):
+    """List session history from Postgres."""
+    rows = await db.list_sessions(limit=limit, offset=offset, status=status)
+    # Convert datetime to isoformat for JSON
+    for r in rows:
+        for k, v in list(r.items()):
+            if hasattr(v, "isoformat"):
+                r[k] = v.isoformat()
+    return rows
+
+
+@app.get("/api/sessions/{session_id}")
+async def get_session(session_id: str):
+    row = await db.get_session(session_id)
+    if not row:
+        raise HTTPException(404, "Session not found")
+    for k, v in list(row.items()):
+        if hasattr(v, "isoformat"):
+            row[k] = v.isoformat()
+    return row
+
+
+@app.get("/api/sessions/{session_id}/events")
+async def get_session_events(
+    session_id: str,
+    event_type: Optional[str] = None,
+    start_sec: Optional[float] = None,
+    end_sec: Optional[float] = None,
+    limit: int = 10000,
+):
+    events = await db.get_events(session_id, event_type, start_sec, end_sec, limit)
+    for e in events:
+        for k, v in list(e.items()):
+            if hasattr(v, "isoformat"):
+                e[k] = v.isoformat()
+    return events
+
+
+@app.get("/api/sessions/{session_id}/export")
+async def export_session(session_id: str, format: str = "json"):
+    if format == "csv":
+        csv_data = await db.export_csv(session_id)
+        return PlainTextResponse(csv_data, media_type="text/csv")
+    events = await db.get_events(session_id, limit=1000000)
+    for e in events:
+        for k, v in list(e.items()):
+            if hasattr(v, "isoformat"):
+                e[k] = v.isoformat()
+    return events
 
 
 # ── WebSocket endpoint ───────────────────────────────────────────────────

@@ -32,6 +32,9 @@ except ImportError:
 
 from yolo_tracker import YoloTracker, classify_teams
 from jersey_ocr import JerseyOcr
+from event_detector import EventDetector
+from ai_enrichment import AIEnrichment
+from audio_analyzer import AudioAnalyzer
 
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -53,6 +56,10 @@ class InferenceSession:
         self.session_id = session_id
         self.tracker = YoloTracker()
         self.ocr = JerseyOcr()
+        self.detector = EventDetector(session_id)
+        self.enrichment = AIEnrichment()
+        self.audio: Optional[AudioAnalyzer] = None
+        self.audio_loading = False
         self.last_event_time = 0.0
         self.frames_processed = 0
 
@@ -114,14 +121,36 @@ async def _listen_for_new_sessions() -> None:
             if msg_type == "metadata":
                 # New session starting
                 if sid not in sessions:
-                    sessions[sid] = InferenceSession(sid)
+                    sess = InferenceSession(sid)
+                    sessions[sid] = sess
                     asyncio.create_task(_process_session(sid))
-                    print(f"[{sid}] inference session created")
+                    # Kick off audio extraction in background (ffmpeg is blocking)
+                    url = data.get("url")
+                    if url and not sess.audio_loading:
+                        sess.audio_loading = True
+                        asyncio.create_task(_load_audio_background(sess, url))
+                    print(f"[{sid}] inference session created (source: {data.get('source_type')})")
             elif msg_type == "end":
                 sessions.pop(sid, None)
                 print(f"[{sid}] inference session ended")
         except Exception as e:
             print(f"[inference] discovery error: {e}")
+
+
+async def _load_audio_background(session: InferenceSession, url: str) -> None:
+    """Extract audio for crowd intensity in a worker thread."""
+    def _extract():
+        try:
+            return AudioAnalyzer(url)
+        except Exception as e:
+            print(f"[{session.session_id}] audio extraction failed: {e}")
+            return None
+    analyzer = await asyncio.to_thread(_extract)
+    if analyzer and analyzer.available:
+        session.audio = analyzer
+        print(f"[{session.session_id}] audio ready ({analyzer.duration:.1f}s)")
+    else:
+        print(f"[{session.session_id}] audio unavailable")
 
 
 async def _process_session(session_id: str) -> None:
@@ -198,16 +227,49 @@ async def _infer_frame(
 
     # Compose output payload
     time_sec = frame_idx / fps
+    tracks_out = [_detection_to_track(d) for d in detections if d.get("label") != "Ball"]
+    ball_out = _detection_to_ball(detections)
+
+    # Run event detector (heuristics)
+    events = session.detector.process(tracks_out, ball_out, frame_idx, time_sec)
+    heuristic_event = events[0] if events else None
+    possession = session.detector.possession_state()
+    tension = session.detector.tension_score
+
+    # Audio crowd intensity (if extracted)
+    crowd = session.audio.get_crowd_intensity(time_sec) if session.audio else -1.0
+
+    # AI enrichment — only fires on significant events / high tension
+    enriched = None
+    if session.enrichment.enabled:
+        enriched = await session.enrichment.maybe_enrich(
+            frame, heuristic_event, tension, crowd, time_sec, possession,
+        )
+
+    # Merge heuristic + AI event
+    event_out = heuristic_event
+    if enriched:
+        # AI can override/refine the event type + description
+        event_out = {
+            **(heuristic_event or {}),
+            "event_type": enriched.get("event_type") or (heuristic_event or {}).get("event_type", "normal_play"),
+            "description": enriched.get("description") or (heuristic_event or {}).get("description"),
+            "confirmed": enriched.get("confirmed", False),
+            "tension_score": tension,
+        }
+
     payload = {
         "session_id": session.session_id,
         "frame_index": frame_idx,
         "timestamp_ms": timestamp_ms,
         "frame_time_sec": time_sec,
-        "tracks": [
-            _detection_to_track(d) for d in detections if d.get("label") != "Ball"
-        ],
-        "ball": _detection_to_ball(detections),
+        "tracks": tracks_out,
+        "ball": ball_out,
         "team_colors": team_colors,
+        "possession": possession,
+        "event": event_out,
+        "crowd_intensity": crowd,
+        "sentiment": enriched.get("sentiment") if enriched else None,
     }
 
     # Publish to gateway via Redis pub/sub

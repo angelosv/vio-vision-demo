@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { PresetUrlPicker } from "./PresetUrlPicker";
+import { ConnectionStatus } from "./ConnectionStatus";
 
 const DEFAULT_URL =
   "https://firebasestorage.googleapis.com/v0/b/tipio-1ec97.appspot.com/o/bar.v.psg.1.ucl.01.10.2025.fullmatchsports.com.1080p.mp4?alt=media&token=593ce8a1-0462-4c37-98c3-e399f25e3853";
@@ -57,19 +59,8 @@ export function Header({
       </div>
 
       {/* URL + controls */}
-      <div className="flex-1 max-w-2xl flex items-center gap-3">
-        <div className="flex-1 relative">
-          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-            <span className="text-brand-muted text-sm">URL</span>
-          </div>
-          <input
-            type="text"
-            value={localUrl}
-            onChange={(e) => setLocalUrl(e.target.value)}
-            placeholder="Match Source URL"
-            className="w-full bg-brand-panel/50 border border-brand-border rounded-lg py-1.5 pl-10 pr-4 text-sm text-white placeholder-brand-muted focus:outline-none focus:border-brand-primary/50 transition-colors"
-          />
-        </div>
+      <div className="flex-1 max-w-3xl flex items-center gap-3">
+        <PresetUrlPicker value={localUrl} onChange={setLocalUrl} />
         <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={handleStart}
@@ -99,6 +90,8 @@ export function Header({
 
       {/* Right: status */}
       <div className="w-1/4 flex justify-end items-center gap-3">
+        <ConnectionStatus />
+
         {/* Status pill */}
         <div className="flex items-center gap-2 px-3 py-1 rounded-full border text-xs font-medium border-brand-success/20 bg-brand-success/10 text-brand-success">
           <div className="w-2 h-2 rounded-full bg-brand-success animate-pulse" />

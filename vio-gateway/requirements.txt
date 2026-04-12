@@ -8,3 +8,4 @@ grpcio-tools
 protobuf
 python-dotenv
 httpx
+asyncpg
