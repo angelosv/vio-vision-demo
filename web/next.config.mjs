@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  reactStrictMode: true,
+  // Disabled in dev to prevent double WebSocket connections / duplicate analysis sessions
+  reactStrictMode: false,
 };
 
 export default nextConfig;

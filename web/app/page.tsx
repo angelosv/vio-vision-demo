@@ -285,6 +285,11 @@ export default function Page() {
     const effectiveUrl = url ?? sourceUrl;
     if (!effectiveUrl) return;
 
+    // Stop any existing session before starting a new one
+    try {
+      await fetch(`${getBackendHTTP()}/stop`, { method: "POST" }).catch(() => {});
+    } catch {}
+
     setEvents([]);
     setDetections([]);
     setTeamColors([]);

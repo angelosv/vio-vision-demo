@@ -175,6 +175,16 @@ async def start_demo(req: StartRequest) -> dict:
     return {"status": "started", "url": req.url, "session_id": session_id}
 
 
+@app.post("/api/stop")
+async def stop_all() -> dict:
+    """Stop all active sessions (useful for dev cleanup)."""
+    count = len(sessions)
+    for session in list(sessions.values()):
+        session.cancel()
+    sessions.clear()
+    return {"status": "stopped", "count": count}
+
+
 @app.get("/")
 async def health_check() -> dict:
     return {"status": "ok"}
@@ -341,10 +351,13 @@ async def run_analysis(session: AnalysisSession) -> None:
                     indexer.poll_and_extract(video_id, on_ready=on_indexer_ready)
                 )
 
-        FRAME_INTERVAL = 30
-        AI_INTERVAL = 3 if session.ai_service.mode != "local" else 5
+        FRAME_INTERVAL = 10  # was 30 — process ~3fps of YOLO for smoother tracking
+        AI_INTERVAL = 9 if session.ai_service.mode != "local" else 15  # AI every ~3s
         sampled = 0
         idx = 0
+        consecutive_read_failures = 0
+
+        print(f"[session {session.id}] analysis started: {session.url}")
 
         while not session.cancelled:
             await session.running.wait()
@@ -363,7 +376,22 @@ async def run_analysis(session: AnalysisSession) -> None:
 
             ret, frame = stream.read()
             if not ret:
-                break
+                # Retry transient read failures before giving up
+                for retry in range(3):
+                    await asyncio.sleep(0.1)
+                    ret, frame = stream.read()
+                    if ret:
+                        consecutive_read_failures = 0
+                        break
+                if not ret:
+                    consecutive_read_failures += 1
+                    print(f"[session {session.id}] stream.read() failed at frame {idx} "
+                          f"(t={idx/stream.fps:.1f}s) — attempt {consecutive_read_failures}")
+                    if consecutive_read_failures >= 3:
+                        print(f"[session {session.id}] stream EOF or unrecoverable error — exiting loop")
+                        break
+                    await asyncio.sleep(0.5)
+                    continue
 
             if idx % FRAME_INTERVAL == 0:
                 resized = cv2.resize(frame, (640, 360))
@@ -450,14 +478,18 @@ async def run_analysis(session: AnalysisSession) -> None:
             await asyncio.sleep(0.01)
 
     except asyncio.CancelledError:
-        pass
+        print(f"[session {session.id}] analysis cancelled")
     except Exception as e:
+        import traceback
+        print(f"[session {session.id}] analysis error: {e}")
+        traceback.print_exc()
         await session.broadcast({"type": "error", "message": str(e)})
     finally:
         duration = session.stream.duration if session.stream else 0
         if session.stream:
             session.stream.release()
             session.stream = None
+        print(f"[session {session.id}] analysis finished (duration={duration:.1f}s)")
         await session.broadcast({"type": "status", "status": "finished"})
         await db.end_session(session.id, duration)
         sessions.pop(session.id, None)
