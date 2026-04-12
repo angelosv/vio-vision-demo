@@ -11,14 +11,15 @@ interface EventsSidebarProps {
 const CATEGORY_FILTERS: { label: string; value: EventCategory | "all" }[] = [
   { label: "All", value: "all" },
   { label: "Critical", value: "critical" },
+  { label: "Key", value: "key_action" },
   { label: "Cards", value: "card" },
   { label: "Fouls", value: "foul" },
   { label: "Set Pieces", value: "set_piece" },
-  { label: "Key", value: "key_action" },
-  { label: "Match", value: "match" },
+  { label: "Possession", value: "possession" },
+  { label: "Stoppage", value: "stoppage" },
+  { label: "Sentiment", value: "sentiment" },
   { label: "Polls", value: "poll" },
-  { label: "Sentiment", value: "sentiment_prompt" },
-  { label: "Product", value: "product" },
+  { label: "Match", value: "match" },
   { label: "System", value: "system" },
 ];
 

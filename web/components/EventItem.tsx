@@ -48,6 +48,27 @@ function categoryStyle(category: MatchEvent["category"]): {
           "border-cyan-500/30 text-cyan-400 bg-cyan-500/10",
         timeColor: "text-cyan-400",
       };
+    case "possession":
+      return {
+        label: "Possession",
+        className:
+          "border-emerald-500/30 text-emerald-400 bg-emerald-500/10",
+        timeColor: "text-emerald-400",
+      };
+    case "stoppage":
+      return {
+        label: "Stoppage",
+        className:
+          "border-slate-500/30 text-slate-400 bg-slate-500/10",
+        timeColor: "text-slate-400",
+      };
+    case "sentiment":
+      return {
+        label: "Sentiment",
+        className:
+          "border-brand-sentiment/30 text-brand-sentiment bg-brand-sentiment/10",
+        timeColor: "text-brand-sentiment",
+      };
     case "poll":
       return {
         label: "Poll",

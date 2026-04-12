@@ -41,8 +41,11 @@ class AIEnrichment:
     RATE_LIMIT_SEC = 3.0
     MAX_HISTORY = 5
 
-    TRIGGER_EVENTS = {"shot_on_goal", "corner", "possession_change", "fast_break", "out_of_bounds"}
-    TENSION_TRIGGER = 7.0
+    TRIGGER_EVENTS = {
+        "shot_on_goal", "corner", "possession_change", "fast_break",
+        "out_of_bounds", "foul", "stoppage",
+    }
+    TENSION_TRIGGER = 5.5  # was 7.0 — fire more often
 
     def __init__(self):
         self._last_call: float = 0.0
@@ -161,8 +164,9 @@ class AIEnrichment:
         possession: Optional[Dict[str, Any]],
     ) -> str:
         sections = [
-            "You are an AI sports analyst. Analyze this football frame and respond ONLY in valid JSON "
-            "(no markdown, no explanation):\n"
+            "You are a live football broadcast analyst. You are watching ONE frame "
+            "but must infer what's happening from visible context. Respond ONLY in "
+            "valid JSON (no markdown, no explanation):\n"
             "{\n"
             "  \"event_type\": \"goal\" | \"goal_chance\" | \"celebration\" | \"yellow_card\" | \"red_card\" | "
             "\"foul\" | \"penalty\" | \"offside\" | \"substitution\" | \"corner\" | \"free_kick\" | "
@@ -170,14 +174,28 @@ class AIEnrichment:
             "  \"description\": \"1-2 sentences broadcast-quality\",\n"
             "  \"sentiment\": \"calm\" | \"tense\" | \"euphoric\" | \"frustrated\",\n"
             "  \"confirmed\": true | false\n"
-            "}"
+            "}\n\n"
+            "BE DECISIVE. Broadcast viewers need fast, confident calls. If you see:\n"
+            "- Referee holding a yellow/red card up → emit yellow_card / red_card\n"
+            "- Referee whistle pose or raised arm + players crowded → foul\n"
+            "- Ball on penalty spot or players lining up at box edge → penalty\n"
+            "- Linesman flag raised → offside\n"
+            "- Player crossing sideline with a replacement nearby → substitution\n"
+            "- Ball in corner quadrant with player preparing → corner\n"
+            "- Wall of players + ball outside the box → free_kick\n"
+            "- Ball in net OR goalkeeper crumpled + players celebrating → goal\n"
+            "- Shot visible heading at goal → goal_chance\n"
+            "- Players clustered celebrating after a goal → celebration\n\n"
+            "Use normal_play ONLY when nothing above applies. Err toward specificity "
+            "over normal_play — we'd rather over-detect and let humans filter than miss events."
         ]
 
         if heuristic_event:
             sections.append(
-                f"HEURISTIC SIGNAL: Our trackers detected {heuristic_event.get('event_type')}"
+                f"HEURISTIC SIGNAL: Our tracker flagged '{heuristic_event.get('event_type')}'"
                 f" (team={heuristic_event.get('team', '?')}, {heuristic_event.get('description', '')}).\n"
-                "Confirm, refine, or override. Set 'confirmed': true only if you're certain."
+                "This is a strong prior. Use the image to confirm the specific event type. "
+                "Set 'confirmed': true when the visual evidence backs it up."
             )
 
         sections.append(

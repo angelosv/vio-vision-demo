@@ -29,14 +29,20 @@ class BallSample:
 
 class EventDetector:
     BALL_HISTORY = 30
-    POSSESSION_DIST = 0.08         # normalized distance: player "owns" ball if within this
-    POSSESSION_WINDOW = 50         # rolling frames for possession percentages
-    SHOT_SPEED_THRESHOLD = 0.35    # normalized units/sec ball must exceed
-    SHOT_COOLDOWN_SEC = 2.0        # minimum gap between shot events
-    GOAL_AREA_X = 0.10             # left/right 10% = goal area
-    TENSION_DECAY = 0.92           # per-frame multiplicative decay
+    POSSESSION_DIST = 0.08
+    POSSESSION_WINDOW = 50
+    SHOT_SPEED_THRESHOLD = 0.35
+    SHOT_COOLDOWN_SEC = 2.0
+    GOAL_AREA_X = 0.10
+    TENSION_DECAY = 0.92
     TENSION_CAP = 10.0
-    MIN_BALL_FRAMES = 3            # need N consecutive ball samples to compute velocity
+    MIN_BALL_FRAMES = 3
+    # Foul / stoppage: ball barely moving + referee very close to players
+    STOPPAGE_SPEED_THRESHOLD = 0.02   # ball speed below this = stopped
+    STOPPAGE_FRAMES = 8                # N consecutive slow frames = stoppage
+    STOPPAGE_COOLDOWN_SEC = 10.0
+    # Foul: stoppage + referee nearby (within 0.15 normalized distance) + multiple players
+    FOUL_REF_DISTANCE = 0.15
 
     def __init__(self, session_id: str):
         self.session_id = session_id
@@ -45,11 +51,16 @@ class EventDetector:
         self.current_possession: Optional[str] = None
         self.tension_score: float = 0.0
         self.last_oob_frame: Optional[int] = None
-        self.last_oob_side: Optional[str] = None  # "left" | "right"
+        self.last_oob_side: Optional[str] = None
         self.last_shot_frame: Optional[int] = None
         self.last_shot_time: float = 0.0
         self.player_side_history: Dict[int, Deque[float]] = {}
         self.frames_seen: int = 0
+        # Stoppage / foul detection
+        self.slow_frames: int = 0
+        self.last_stoppage_time: float = 0.0
+        self.last_foul_time: float = 0.0
+        self.in_stoppage: bool = False
 
     # ─── Public API ────────────────────────────────────────────────────────
 
@@ -115,8 +126,18 @@ class EventDetector:
                 self._bump(1.0)
                 events.append(corner)
 
+            # Stoppage: ball barely moving for several frames
+            stoppage = self._detect_stoppage(frame_idx, time_sec)
+            if stoppage:
+                events.append(stoppage)
+
+            # Foul: stoppage + referee close to players
+            foul = self._detect_foul(bx, by, tracks, frame_idx, time_sec)
+            if foul:
+                self._bump(2.0)
+                events.append(foul)
+
         # Fast-break: rapid possession change when tension was already elevated
-        # (piggy-back on possession_change when tension jumped recently)
         if events and any(e["event_type"] == "possession_change" for e in events):
             if self.tension_score > 5.5:
                 self._bump(4.0)
@@ -126,7 +147,6 @@ class EventDetector:
                     description=f"Fast break by {self.current_possession}",
                 ))
 
-        # Attach current tension to every emitted event
         for e in events:
             e["tension_score"] = round(self.tension_score, 2)
 
@@ -228,6 +248,68 @@ class EventDetector:
             side=side,
             description=f"Corner kick on {side} side",
         )
+
+    def _detect_stoppage(self, frame_idx: int, time_sec: float) -> Optional[Dict]:
+        """Ball speed under threshold for N consecutive frames = stoppage."""
+        samples = list(self.ball_history)
+        if len(samples) < self.MIN_BALL_FRAMES:
+            return None
+        cur, prev = samples[-1], samples[-self.MIN_BALL_FRAMES]
+        dt = cur.t - prev.t
+        if dt <= 0:
+            return None
+        speed = (((cur.x - prev.x) ** 2 + (cur.y - prev.y) ** 2) ** 0.5) / dt
+
+        if speed < self.STOPPAGE_SPEED_THRESHOLD:
+            self.slow_frames += 1
+        else:
+            if self.in_stoppage:
+                self.in_stoppage = False  # play resumed
+            self.slow_frames = 0
+            return None
+
+        # Trigger stoppage event on transition
+        if (self.slow_frames >= self.STOPPAGE_FRAMES
+            and not self.in_stoppage
+            and time_sec - self.last_stoppage_time >= self.STOPPAGE_COOLDOWN_SEC):
+            self.in_stoppage = True
+            self.last_stoppage_time = time_sec
+            return self._emit(
+                "stoppage", frame_idx, time_sec,
+                description="Play stopped",
+            )
+        return None
+
+    def _detect_foul(
+        self, bx: float, by: float, tracks: List[Dict],
+        frame_idx: int, time_sec: float,
+    ) -> Optional[Dict]:
+        """Foul heuristic: in a stoppage + referee near the ball + multiple players."""
+        if not self.in_stoppage:
+            return None
+        if time_sec - self.last_foul_time < 10.0:
+            return None
+
+        # Find referee near the ball
+        refs_nearby = 0
+        players_nearby = 0
+        for t in tracks:
+            pos = t.get("position", {})
+            px, py = pos.get("x", 0), pos.get("y", 0)
+            dist = ((px - bx) ** 2 + (py - by) ** 2) ** 0.5
+            if dist < self.FOUL_REF_DISTANCE:
+                if t.get("type") == "Referee" or t.get("team") == "ref":
+                    refs_nearby += 1
+                else:
+                    players_nearby += 1
+
+        if refs_nearby >= 1 and players_nearby >= 2:
+            self.last_foul_time = time_sec
+            return self._emit(
+                "foul", frame_idx, time_sec,
+                description=f"Possible foul — referee + {players_nearby} players clustered near ball",
+            )
+        return None
 
     def _bump(self, delta: float) -> None:
         self.tension_score = min(self.TENSION_CAP, self.tension_score + delta)

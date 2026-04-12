@@ -1,34 +1,35 @@
 "use client";
 
 import { useState } from "react";
-import type { Detection, TensionPoint } from "@/types/events";
-
-interface BallPos {
-  x: number;
-  y: number;
-}
+import type { TrackedObject, Ball, Possession, TensionPoint } from "@/types/events";
 
 interface BottomPanelsProps {
-  detections: Detection[];
-  tensionHistory: TensionPoint[];
+  tracks: TrackedObject[];
+  ball: Ball | null;
   teamColors?: string[];
-  ballHistory?: BallPos[];
+  ballHistory?: { x: number; y: number }[];
+  possession: Possession;
+  tensionHistory: TensionPoint[];
 }
 
 const GRID_COLS = 20;
 const GRID_ROWS = 10;
 
-export function BottomPanels({ detections, tensionHistory, teamColors = [], ballHistory = [] }: BottomPanelsProps) {
+export function BottomPanels({
+  tracks,
+  ball,
+  teamColors = [],
+  ballHistory = [],
+  possession,
+  tensionHistory,
+}: BottomPanelsProps) {
   const [pitchOpen, setPitchOpen] = useState(true);
   const [momentumOpen, setMomentumOpen] = useState(true);
   const [showHeatmap, setShowHeatmap] = useState(true);
 
-  // ── Pitch Control data ──
-  const players = detections.filter((d) => d.label === "Player" || d.label === "GK" || d.label === "Referee");
-  const ball = detections.find((d) => d.label === "Ball");
-  const leftHalf = players.filter((d) => centerX(d) < 0.5).length;
-  const rightHalf = players.length - leftHalf;
-  const leftPct = players.length > 0 ? Math.round((leftHalf / players.length) * 100) : 50;
+  const field = tracks.filter(
+    (t) => t.type === "Player" || t.type === "Goalkeeper" || t.type === "Referee"
+  );
 
   return (
     <div className="shrink-0 flex gap-3 bottom-panels">
@@ -59,73 +60,94 @@ export function BottomPanels({ detections, tensionHistory, teamColors = [], ball
           <div className="p-3 flex-1 flex flex-col gap-2">
             {/* Mini pitch */}
             <div className="w-full h-24 relative border border-white/10 rounded bg-[#1a2e1a] overflow-hidden">
-              {/* Center line + circle */}
               <div className="absolute left-1/2 top-0 bottom-0 w-px bg-white/20" />
               <div className="absolute top-1/2 left-1/2 w-10 h-10 -mt-5 -ml-5 border border-white/15 rounded-full" />
-              {/* Penalty areas */}
               <div className="absolute top-1/4 left-0 w-[12%] h-1/2 border-r border-t border-b border-white/15 rounded-r" />
               <div className="absolute top-1/4 right-0 w-[12%] h-1/2 border-l border-t border-b border-white/15 rounded-l" />
 
-              {/* Ball heatmap overlay */}
-              {showHeatmap && ballHistory.length > 5 && (
-                <BallHeatmap data={ballHistory} />
-              )}
+              {showHeatmap && ballHistory.length > 5 && <BallHeatmap data={ballHistory} />}
 
-              {/* Player dots — coloured by team */}
-              {players.map((p, i) => {
-                const dotColor = p.team !== undefined && teamColors[p.team]
-                  ? teamColors[p.team]
-                  : "#FE9330";
+              {field.map((t) => {
+                const color =
+                  t.type === "Referee" ? "#f472b6"
+                  : t.team === "home" ? (teamColors[0] || "#FE9330")
+                  : t.team === "away" ? (teamColors[1] || "#2C7A94")
+                  : t.team_color || "#FE9330";
                 return (
                   <div
-                    key={i}
+                    key={t.track_id}
                     className="absolute w-2.5 h-2.5 rounded-full border"
                     style={{
-                      left: `${centerX(p) * 100}%`,
-                      top: `${centerY(p) * 100}%`,
+                      left: `${t.position.x * 100}%`,
+                      top: `${t.position.y * 100}%`,
                       transform: "translate(-50%,-50%)",
-                      backgroundColor: dotColor,
-                      borderColor: dotColor,
-                      boxShadow: `0 0 4px ${dotColor}88`,
+                      backgroundColor: color,
+                      borderColor: color,
+                      boxShadow: `0 0 4px ${color}88`,
                     }}
                   />
                 );
               })}
 
-              {/* Ball */}
               {ball && (
                 <div
                   className="absolute w-3 h-3 rounded-full bg-white shadow-[0_0_8px_white] border border-white/50"
-                  style={{ left: `${centerX(ball) * 100}%`, top: `${centerY(ball) * 100}%`, transform: "translate(-50%,-50%)" }}
+                  style={{
+                    left: `${ball.position.x * 100}%`,
+                    top: `${ball.position.y * 100}%`,
+                    transform: "translate(-50%,-50%)",
+                  }}
                 />
               )}
 
-              {/* No data overlay */}
-              {players.length === 0 && (
+              {field.length === 0 && (
                 <div className="absolute inset-0 flex items-center justify-center text-xs text-brand-muted">
                   Waiting for detections...
                 </div>
               )}
             </div>
 
-            {/* Possession bar */}
+            {/* Possession bar (from backend, not inferred) */}
             <div className="flex items-center gap-2 text-[10px]">
-              <span className="text-blue-400 font-mono w-8 text-right">{leftPct}%</span>
+              <span className="font-mono w-8 text-right" style={{ color: teamColors[0] || "#FE9330" }}>
+                {possession.home_percent.toFixed(0)}%
+              </span>
               <div className="flex-1 h-1.5 bg-brand-border rounded-full overflow-hidden flex">
-                <div className="h-full bg-blue-400 transition-all duration-500" style={{ width: `${leftPct}%` }} />
-                <div className="h-full bg-white/40 transition-all duration-500" style={{ width: `${100 - leftPct}%` }} />
+                <div
+                  className="h-full transition-all duration-500"
+                  style={{
+                    width: `${possession.home_percent}%`,
+                    backgroundColor: teamColors[0] || "#FE9330",
+                  }}
+                />
+                <div
+                  className="h-full transition-all duration-500"
+                  style={{
+                    width: `${possession.away_percent}%`,
+                    backgroundColor: teamColors[1] || "#2C7A94",
+                  }}
+                />
               </div>
-              <span className="text-white/60 font-mono w-8">{100 - leftPct}%</span>
+              <span className="font-mono w-8" style={{ color: teamColors[1] || "#2C7A94" }}>
+                {possession.away_percent.toFixed(0)}%
+              </span>
             </div>
-            <div className="flex justify-between text-[10px] text-brand-muted px-10">
-              <span>Left ({leftHalf})</span>
-              <span>Right ({rightHalf})</span>
+            <div className="flex justify-between text-[10px] text-brand-muted">
+              <span>Home</span>
+              <span className={`uppercase font-semibold ${
+                possession.team === "home" ? "text-brand-primary"
+                : possession.team === "away" ? "text-brand-accent"
+                : "text-brand-muted"
+              }`}>
+                {possession.team ? `${possession.team} has ball` : "—"}
+              </span>
+              <span>Away</span>
             </div>
           </div>
         )}
       </div>
 
-      {/* ── Team Momentum ── */}
+      {/* ── Match Tension ── */}
       <div className="flex-1 glass-panel rounded-xl overflow-hidden flex flex-col transition-all duration-300">
         <button
           onClick={() => setMomentumOpen((v) => !v)}
@@ -137,7 +159,7 @@ export function BottomPanels({ detections, tensionHistory, teamColors = [], ball
           <span className={`text-brand-muted text-xs transition-transform duration-300 ${momentumOpen ? "rotate-0" : "rotate-180"}`}>˄</span>
         </button>
         {momentumOpen && (
-          <div className="p-4 flex-1 flex flex-col gap-1">
+          <div className="p-3 flex-1 flex flex-col gap-1">
             {tensionHistory.length > 1 ? (
               <MomentumChart data={tensionHistory} />
             ) : (
@@ -152,22 +174,10 @@ export function BottomPanels({ detections, tensionHistory, teamColors = [], ball
   );
 }
 
-// ── Helpers ──
-
-function centerX(d: Detection): number {
-  return (d.box[0] + d.box[2]) / 2;
-}
-function centerY(d: Detection): number {
-  return (d.box[1] + d.box[3]) / 2;
-}
-
 // ── Ball Heatmap ──
 
 function BallHeatmap({ data }: { data: { x: number; y: number }[] }) {
-  // Build a grid and count ball positions per cell
-  const grid: number[][] = Array.from({ length: GRID_ROWS }, () =>
-    Array(GRID_COLS).fill(0)
-  );
+  const grid: number[][] = Array.from({ length: GRID_ROWS }, () => Array(GRID_COLS).fill(0));
   for (const { x, y } of data) {
     const col = Math.min(Math.floor(x * GRID_COLS), GRID_COLS - 1);
     const row = Math.min(Math.floor(y * GRID_ROWS), GRID_ROWS - 1);
@@ -181,7 +191,6 @@ function BallHeatmap({ data }: { data: { x: number; y: number }[] }) {
         row.map((count, c) => {
           if (count === 0) return null;
           const intensity = count / maxCount;
-          // Color: green → yellow → red based on intensity
           const r_c = Math.round(intensity > 0.5 ? 255 : intensity * 2 * 255);
           const g_c = Math.round(intensity < 0.5 ? 255 : (1 - intensity) * 2 * 255);
           const color = `rgb(${r_c},${g_c},0)`;
@@ -205,26 +214,23 @@ function BallHeatmap({ data }: { data: { x: number; y: number }[] }) {
   );
 }
 
-// ── Momentum Chart (SVG) ──
+// ── Momentum Chart ──
 
 function MomentumChart({ data }: { data: TensionPoint[] }) {
   const W = 400;
   const H = 100;
   const PAD = 2;
-
   if (data.length < 2) return null;
 
   const minT = data[0].time;
   const maxT = data[data.length - 1].time;
   const rangeT = maxT - minT || 1;
-
   const toX = (t: number) => PAD + ((t - minT) / rangeT) * (W - PAD * 2);
   const toY = (s: number) => H - PAD - (s / 10) * (H - PAD * 2);
 
   const points = data.map((d) => `${toX(d.time)},${toY(d.score)}`).join(" ");
   const areaPoints = `${toX(data[0].time)},${H - PAD} ${points} ${toX(data[data.length - 1].time)},${H - PAD}`;
 
-  // Current tension
   const current = data[data.length - 1].score;
   const avg = data.reduce((s, d) => s + d.score, 0) / data.length;
 
@@ -239,17 +245,12 @@ function MomentumChart({ data }: { data: TensionPoint[] }) {
         <span className="font-mono text-brand-muted">{avg.toFixed(1)}</span>
       </div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-20 flex-1" preserveAspectRatio="none">
-        {/* Grid lines at 3, 5, 8 */}
         {[3, 5, 8].map((v) => (
           <line key={v} x1={PAD} y1={toY(v)} x2={W - PAD} y2={toY(v)} stroke="white" strokeOpacity={0.07} strokeDasharray="4 4" />
         ))}
-        {/* Danger zone */}
         <rect x={PAD} y={toY(10)} width={W - PAD * 2} height={toY(8) - toY(10)} fill="red" fillOpacity={0.05} />
-        {/* Area fill */}
         <polygon points={areaPoints} fill="url(#tensionGrad)" fillOpacity={0.3} />
-        {/* Line */}
         <polyline points={points} fill="none" stroke="url(#tensionLine)" strokeWidth={2} strokeLinejoin="round" />
-        {/* Current dot */}
         <circle cx={toX(data[data.length - 1].time)} cy={toY(current)} r={3}
           fill={current >= 7 ? "#f87171" : current >= 4 ? "#facc15" : "#38B2AC"}
           className="animate-pulse" />

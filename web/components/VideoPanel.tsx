@@ -1,13 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import type { Detection } from "@/types/events";
-
-export interface DetectionFrame {
-  detections: Detection[];
-  teamColors: string[];
-  crowdIntensity: number;
-}
+import type { TrackedObject, Ball } from "@/types/events";
 
 interface VideoPanelProps {
   currentTime: number;
@@ -15,13 +9,15 @@ interface VideoPanelProps {
   onTimeChange: (t: number) => void;
   onSeek?: (time: number) => void;
   videoUrl?: string | null;
-  detectionBuffer?: Map<number, DetectionFrame>;
+  tracks: TrackedObject[];
+  ball: Ball | null;
+  crowdIntensity?: number;
+  sentiment?: string | null;
   isPlaying?: boolean;
   onPlayPause?: () => void;
   scoreboard?: { home_team?: string; away_team?: string; home_score: number; away_score: number } | null;
   sceneMarkers?: { start_sec: number }[];
   highlightMarkers?: { timeSec: number; category: string }[];
-  sentiment?: string | null; // "calm" | "tense" | "euphoric" | "frustrated"
 }
 
 function formatTime(seconds: number): string {
@@ -30,52 +26,27 @@ function formatTime(seconds: number): string {
   return `${m}:${s}`;
 }
 
-function labelColor(det: Detection): { border: string; bg: string; text: string } {
-  const l = det.label.toLowerCase();
-  if (l === "ball") return { border: "#ffffff", bg: "#ffffff", text: "#000" };
-  if (l === "gk") return { border: "#facc15", bg: "#facc15", text: "#000" };
-  if (l === "referee") return { border: "#f472b6", bg: "#f472b6", text: "#000" };
-  if (l === "crowd") return { border: "#6b7280", bg: "#6b7280", text: "#fff" };
-  // Use team color if available
-  if (det.color) return { border: det.color, bg: det.color, text: "#000" };
-  if (det.team === 0) return { border: "#FE9330", bg: "#FE9330", text: "#000" };
-  if (det.team === 1) return { border: "#2C7A94", bg: "#2C7A94", text: "#fff" };
+function trackColor(t: TrackedObject): { border: string; bg: string; text: string } {
+  if (t.type === "Referee") return { border: "#f472b6", bg: "#f472b6", text: "#000" };
+  if (t.type === "Goalkeeper") return { border: "#facc15", bg: "#facc15", text: "#000" };
+  if (t.team_color) return { border: t.team_color, bg: t.team_color, text: "#000" };
+  if (t.team === "home") return { border: "#FE9330", bg: "#FE9330", text: "#000" };
+  if (t.team === "away") return { border: "#2C7A94", bg: "#2C7A94", text: "#fff" };
   return { border: "#FE9330", bg: "#FE9330", text: "#000" };
 }
 
-function detectionLabel(det: Detection): string {
-  if (det.label === "Crowd") return "";
-  const base = det.label;
-  if (det.player_id && det.label !== "Ball") {
-    return `#${det.player_id} ${base}`;
-  }
-  return base;
+function trackLabel(t: TrackedObject): string {
+  if (t.type === "Referee") return "REF";
+  if (t.jersey_number) return `#${t.jersey_number}`;
+  return `T${t.track_id}`;
 }
 
-const SENTIMENT_CONFIG: Record<string, { icon: string; color: string; bg: string; label: string }> = {
-  calm: { icon: "●", color: "text-blue-400", bg: "bg-blue-400", label: "Calm" },
-  tense: { icon: "▲", color: "text-yellow-400", bg: "bg-yellow-400", label: "Tense" },
-  euphoric: { icon: "★", color: "text-green-400", bg: "bg-green-400", label: "Euphoric" },
-  frustrated: { icon: "✕", color: "text-red-400", bg: "bg-red-400", label: "Frustrated" },
+const SENTIMENT_CONFIG: Record<string, { dot: string; color: string; label: string }> = {
+  calm: { dot: "bg-blue-400", color: "text-blue-400", label: "Calm" },
+  tense: { dot: "bg-yellow-400", color: "text-yellow-400", label: "Tense" },
+  euphoric: { dot: "bg-green-400", color: "text-green-400", label: "Euphoric" },
+  frustrated: { dot: "bg-red-400", color: "text-red-400", label: "Frustrated" },
 };
-
-/** Find nearest detection frame within tolerance. */
-function findNearest(
-  buffer: Map<number, DetectionFrame>,
-  target: number,
-  tolerance: number,
-): DetectionFrame | null {
-  let best: DetectionFrame | null = null;
-  let bestDist = tolerance;
-  for (const [key, value] of buffer) {
-    const dist = Math.abs(key - target);
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = value;
-    }
-  }
-  return best;
-}
 
 export function VideoPanel({
   currentTime,
@@ -83,146 +54,61 @@ export function VideoPanel({
   onTimeChange,
   onSeek,
   videoUrl,
-  detectionBuffer,
+  tracks,
+  ball,
+  crowdIntensity = -1,
+  sentiment,
   isPlaying = true,
   onPlayPause,
   scoreboard,
   sceneMarkers,
   highlightMarkers,
-  sentiment,
 }: VideoPanelProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [frameSrc, setFrameSrc] = useState(
-    "https://images.unsplash.com/photo-1518605368461-1e129623b1bf?auto=format&fit=crop&q=80&w=2000",
-  );
-  const [detections, setDetections] = useState<Detection[]>([]);
-  const [crowdIntensity, setCrowdIntensity] = useState(-1);
   const [muted, setMuted] = useState(true);
   const [videoDuration, setVideoDuration] = useState(0);
-
-  // Interpolation: store previous + current detection frames for lerp
-  const prevDetectionsRef = useRef<{ time: number; dets: Detection[] }>({ time: 0, dets: [] });
-  const currDetectionsRef = useRef<{ time: number; dets: Detection[] }>({ time: 0, dets: [] });
-  const [interpolatedDets, setInterpolatedDets] = useState<Detection[]>([]);
 
   const isNative = !!videoUrl;
   const effectiveDuration = isNative && videoDuration > 0 ? videoDuration : totalTime;
   const effectiveTime = isNative && videoRef.current ? videoRef.current.currentTime : currentTime;
   const progress = effectiveDuration > 0 ? (effectiveTime / effectiveDuration) * 100 : 0;
 
-  // Interpolate bounding boxes between two detection frames
-  const interpolateDetections = useCallback((t: number) => {
-    const prev = prevDetectionsRef.current;
-    const curr = currDetectionsRef.current;
-    if (!curr.dets.length) return;
-
-    const span = curr.time - prev.time;
-    if (span <= 0 || t <= prev.time) {
-      setInterpolatedDets(curr.dets);
-      return;
-    }
-
-    const alpha = Math.min(1, (t - prev.time) / span);
-    const result: Detection[] = curr.dets.map((det) => {
-      // Find matching previous detection by player_id or nearest position
-      const prevDet = det.player_id
-        ? prev.dets.find((p) => p.player_id === det.player_id)
-        : null;
-      if (!prevDet) return det;
-
-      const [x1, y1, x2, y2] = det.box;
-      const [px1, py1, px2, py2] = prevDet.box;
-      return {
-        ...det,
-        box: [
-          px1 + (x1 - px1) * alpha,
-          py1 + (y1 - py1) * alpha,
-          px2 + (x2 - px2) * alpha,
-          py2 + (y2 - py2) * alpha,
-        ] as [number, number, number, number],
-      };
-    });
-    setInterpolatedDets(result);
-  }, []);
-
-  // Legacy mode: listen for frame updates via CustomEvent
-  useEffect(() => {
-    if (isNative) return;
-    const handleUpdate = (e: any) => {
-      const { frame, dets, crowdIntensity: ci } = e.detail;
-      if (frame) setFrameSrc(frame);
-      if (dets) {
-        prevDetectionsRef.current = currDetectionsRef.current;
-        currDetectionsRef.current = { time: Date.now() / 1000, dets };
-        setDetections(dets);
-      }
-      if (ci !== undefined) setCrowdIntensity(ci);
-    };
-    window.addEventListener("vio-frame-update", handleUpdate);
-    return () => window.removeEventListener("vio-frame-update", handleUpdate);
-  }, [isNative]);
-
-  // Native mode: sync detections from buffer on video timeupdate + interpolate
   const handleTimeUpdate = useCallback(() => {
-    if (!videoRef.current || !detectionBuffer) return;
-    const t = videoRef.current.currentTime;
-    onTimeChange(t);
-
-    const quantized = Math.round(t * 10) / 10;
-    const frame =
-      detectionBuffer.get(quantized) ?? findNearest(detectionBuffer, quantized, 0.5);
-    if (frame) {
-      // Check if this is a new detection frame
-      if (frame.detections !== currDetectionsRef.current.dets) {
-        prevDetectionsRef.current = currDetectionsRef.current;
-        currDetectionsRef.current = { time: t, dets: frame.detections };
-        setDetections(frame.detections);
-      }
-      setCrowdIntensity(frame.crowdIntensity);
-      interpolateDetections(t);
-    }
-  }, [detectionBuffer, onTimeChange, interpolateDetections]);
+    if (!videoRef.current) return;
+    onTimeChange(videoRef.current.currentTime);
+  }, [onTimeChange]);
 
   const handleMetadataLoaded = () => {
-    if (videoRef.current) {
-      setVideoDuration(videoRef.current.duration);
-    }
+    if (videoRef.current) setVideoDuration(videoRef.current.duration);
   };
 
-  // Sync play/pause state to video element
   useEffect(() => {
     if (!videoRef.current || !isNative) return;
-    if (isPlaying) {
-      videoRef.current.play().catch(() => {});
-    } else {
-      videoRef.current.pause();
-    }
+    if (isPlaying) videoRef.current.play().catch(() => {});
+    else videoRef.current.pause();
   }, [isPlaying, isNative]);
 
-  // Sync mute state
   useEffect(() => {
-    if (videoRef.current) {
-      videoRef.current.muted = muted;
-    }
+    if (videoRef.current) videoRef.current.muted = muted;
   }, [muted]);
 
   const handleTimelineClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const ratio = (e.clientX - rect.left) / rect.width;
     const targetTime = effectiveDuration * ratio;
-
-    if (isNative && videoRef.current) {
-      videoRef.current.currentTime = targetTime;
-    }
+    if (isNative && videoRef.current) videoRef.current.currentTime = targetTime;
     onTimeChange(targetTime);
     onSeek?.(targetTime);
   };
+
+  const playerCount = tracks.filter((t) => t.type === "Player" || t.type === "Goalkeeper").length;
+  const refCount = tracks.filter((t) => t.type === "Referee").length;
 
   return (
     <div className="flex-1 flex flex-col gap-4 min-w-0">
       <div className="relative flex-1 rounded-xl overflow-hidden glass-panel flex flex-col">
         <div className="flex-1 relative bg-black">
-          {/* Video / Frame */}
+          {/* Video / Placeholder */}
           {isNative ? (
             <video
               ref={videoRef}
@@ -235,23 +121,18 @@ export function VideoPanel({
               onLoadedMetadata={handleMetadataLoaded}
             />
           ) : (
-            <img
-              src={frameSrc}
-              alt="Football Match"
-              className="w-full h-full object-contain"
-            />
+            <div className="w-full h-full flex items-center justify-center text-brand-muted text-sm">
+              Waiting for video source…
+            </div>
           )}
 
-          {/* YOLO detections overlay (interpolated for smooth tracking) */}
-          {(isNative && interpolatedDets.length ? interpolatedDets : detections)
-            .filter((det) => det.label !== "Crowd")
-            .map((det, i) => {
-            const [x1, y1, x2, y2] = det.box;
-            const color = labelColor(det);
-            const label = detectionLabel(det);
+          {/* Tracked objects overlay */}
+          {tracks.map((t) => {
+            const color = trackColor(t);
+            const { x1, y1, x2, y2 } = t.bbox;
             return (
               <div
-                key={det.player_id ?? i}
+                key={t.track_id}
                 className="absolute pointer-events-none transition-all duration-150 ease-linear"
                 style={{
                   left: `${x1 * 100}%`,
@@ -263,19 +144,33 @@ export function VideoPanel({
                   boxShadow: `0 0 6px ${color.border}66`,
                 }}
               >
-                {label && (
-                  <span
-                    className="absolute -top-5 left-0 text-[8px] font-bold px-1 py-0.5 rounded-sm whitespace-nowrap"
-                    style={{ background: color.bg, color: color.text }}
-                  >
-                    {label}
-                  </span>
-                )}
+                <span
+                  className="absolute -top-5 left-0 text-[9px] font-bold px-1 py-0.5 rounded-sm whitespace-nowrap"
+                  style={{ background: color.bg, color: color.text }}
+                >
+                  {trackLabel(t)}
+                </span>
               </div>
             );
           })}
 
-          {/* Scoreboard overlay (from Video Indexer OCR) */}
+          {/* Ball */}
+          {ball && (
+            <div
+              className="absolute pointer-events-none transition-all duration-150 ease-linear"
+              style={{
+                left: `${ball.bbox.x1 * 100}%`,
+                top: `${ball.bbox.y1 * 100}%`,
+                width: `${(ball.bbox.x2 - ball.bbox.x1) * 100}%`,
+                height: `${(ball.bbox.y2 - ball.bbox.y1) * 100}%`,
+                border: "2px solid #ffffff",
+                borderRadius: "50%",
+                boxShadow: "0 0 8px white",
+              }}
+            />
+          )}
+
+          {/* Scoreboard overlay */}
           {scoreboard && (
             <div className="absolute top-4 right-4 bg-black/70 backdrop-blur border border-white/10 rounded-lg px-4 py-2 flex items-center gap-3 z-10">
               <span className="text-sm font-semibold">{scoreboard.home_team ?? "Home"}</span>
@@ -286,31 +181,25 @@ export function VideoPanel({
             </div>
           )}
 
-          {/* Metrics overlay */}
+          {/* Metrics overlay — stays ONLY for live system health, not events */}
           <div className="absolute top-4 left-4 flex gap-2 flex-wrap">
             <div className="bg-black/60 backdrop-blur border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2">
               <span className="text-brand-success text-xs">Players</span>
-              <span className="text-xs font-mono">
-                {detections.filter((d) => d.label === "Player" || d.label === "GK").length}
-              </span>
+              <span className="text-xs font-mono">{playerCount}</span>
             </div>
-            {detections.some((d) => d.label === "Referee") && (
+            {refCount > 0 && (
               <div className="bg-black/60 backdrop-blur border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2">
                 <span className="text-pink-400 text-xs">Refs</span>
-                <span className="text-xs font-mono">
-                  {detections.filter((d) => d.label === "Referee").length}
-                </span>
+                <span className="text-xs font-mono">{refCount}</span>
               </div>
             )}
             <div className="bg-black/60 backdrop-blur border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2">
               <span className="text-brand-accent text-xs">Ball</span>
-              <span className="text-xs font-mono">
-                {detections.some((d) => d.label === "Ball") ? "Y" : "-"}
-              </span>
+              <span className="text-xs font-mono">{ball ? "Y" : "-"}</span>
             </div>
             {sentiment && SENTIMENT_CONFIG[sentiment] && (
               <div className="bg-black/60 backdrop-blur border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2">
-                <div className={`w-2 h-2 rounded-full ${SENTIMENT_CONFIG[sentiment].bg} animate-pulse`} />
+                <div className={`w-2 h-2 rounded-full ${SENTIMENT_CONFIG[sentiment].dot} animate-pulse`} />
                 <span className={`text-xs font-medium ${SENTIMENT_CONFIG[sentiment].color}`}>
                   {SENTIMENT_CONFIG[sentiment].label}
                 </span>
@@ -320,11 +209,8 @@ export function VideoPanel({
               <div className="bg-black/60 backdrop-blur border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2">
                 <span
                   className={`text-xs ${
-                    crowdIntensity >= 7
-                      ? "text-red-400"
-                      : crowdIntensity >= 4
-                        ? "text-yellow-400"
-                        : "text-brand-muted"
+                    crowdIntensity >= 7 ? "text-red-400" :
+                    crowdIntensity >= 4 ? "text-yellow-400" : "text-brand-muted"
                   }`}
                 >
                   Crowd
@@ -333,11 +219,8 @@ export function VideoPanel({
                   <div className="w-12 h-1.5 bg-brand-border rounded-full overflow-hidden">
                     <div
                       className={`h-full rounded-full transition-all duration-300 ${
-                        crowdIntensity >= 7
-                          ? "bg-red-400"
-                          : crowdIntensity >= 4
-                            ? "bg-yellow-400"
-                            : "bg-brand-muted"
+                        crowdIntensity >= 7 ? "bg-red-400" :
+                        crowdIntensity >= 4 ? "bg-yellow-400" : "bg-brand-muted"
                       }`}
                       style={{ width: `${crowdIntensity * 10}%` }}
                     />
@@ -360,7 +243,6 @@ export function VideoPanel({
             <div className="absolute w-full h-1.5 bg-brand-border rounded-full overflow-hidden">
               <div className="h-full bg-brand-primary" style={{ width: `${progress}%` }} />
             </div>
-            {/* Scene markers from Video Indexer */}
             {sceneMarkers?.map((scene, i) => (
               <div
                 key={i}
@@ -369,13 +251,11 @@ export function VideoPanel({
                 title={`Scene at ${formatTime(scene.start_sec)}`}
               />
             ))}
-            {/* Highlight markers */}
             {highlightMarkers?.map((hl, i) => {
-              const markerColor =
+              const c =
                 hl.category === "critical" ? "#ef4444" :
                 hl.category === "card" ? "#eab308" :
-                hl.category === "foul" ? "#f97316" :
-                "#38bdf8";
+                hl.category === "foul" ? "#f97316" : "#38bdf8";
               return (
                 <div
                   key={`hl-${i}`}
@@ -385,7 +265,7 @@ export function VideoPanel({
                 >
                   <div
                     className="w-2 h-2 rotate-45"
-                    style={{ backgroundColor: markerColor, boxShadow: `0 0 4px ${markerColor}` }}
+                    style={{ backgroundColor: c, boxShadow: `0 0 4px ${c}` }}
                   />
                 </div>
               );
@@ -412,14 +292,10 @@ export function VideoPanel({
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg>
                 )}
               </button>
-              <span>
-                {formatTime(isNative ? effectiveTime : currentTime)} / {formatTime(effectiveDuration)}
-              </span>
+              <span>{formatTime(effectiveTime)} / {formatTime(effectiveDuration)}</span>
             </div>
             <div className="flex items-center gap-3">
-              <button className="hover:text-white px-2 py-1 rounded bg-white/5 border border-white/10">
-                1x
-              </button>
+              <button className="hover:text-white px-2 py-1 rounded bg-white/5 border border-white/10">1x</button>
             </div>
           </div>
         </div>

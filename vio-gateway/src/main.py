@@ -127,8 +127,6 @@ class ConnectionManager:
                                 "total_frames": data.get("total_frames", 0),
                                 "video_url": data.get("url"),
                                 "source_type": data.get("source_type"),
-                                "stream_frames": False,
-                                "match_info": {},
                             })
                         elif data.get("type") == "end":
                             asyncio.create_task(db.end_session(
@@ -140,67 +138,32 @@ class ConnectionManager:
                                 "status": "finished",
                             })
                     else:
-                        # Detection payload — transform for legacy frontend
-                        legacy = _convert_detection_payload(data)
-                        # Persist events that matter (non-normal_play or high tension)
-                        evt_type = legacy.get("event_type", "normal_play")
-                        tension = legacy.get("tension_score", 0) or 0
+                        # Native detection payload — pass through directly
+                        data["type"] = "event"  # tag for frontend discriminator
+                        # Persist significant events
+                        evt = data.get("event") or {}
+                        evt_type = evt.get("event_type") or evt.get("type", "normal_play")
+                        tension = evt.get("tension_score", 0) or data.get("tension_score", 0) or 0
                         if evt_type != "normal_play" or tension >= 3:
-                            asyncio.create_task(db.save_event(session_id, legacy))
+                            asyncio.create_task(db.save_event(session_id, {
+                                "frame_index": data.get("frame_index", 0),
+                                "time_sec": data.get("frame_time_sec", 0),
+                                "event_type": evt_type,
+                                "tension_score": tension,
+                                "description": evt.get("description"),
+                                "sentiment": data.get("sentiment"),
+                                "crowd_intensity": data.get("crowd_intensity", -1),
+                                "detections": data.get("tracks", []),
+                                "confirmed": evt.get("confirmed", False),
+                            }))
                             metrics.events_persisted.labels(event_type=evt_type).inc()
-                        await self.broadcast(session_id, legacy)
+                        await self.broadcast(session_id, data)
                 except Exception as e:
                     print(f"[gateway] broadcast error: {e}")
         except asyncio.CancelledError:
             pass
         finally:
             await pubsub.unsubscribe()
-
-
-def _convert_detection_payload(data: dict) -> dict:
-    """Transform the new microservice payload into the legacy 'event' format.
-
-    Keeps the existing frontend working while we migrate to the new schema.
-    """
-    tracks = data.get("tracks", [])
-    ball = data.get("ball")
-
-    # Build legacy 'detections' list (flat array with label/box)
-    detections = []
-    for t in tracks:
-        bbox = t.get("bbox", {})
-        label = t.get("type", "Player")
-        jersey = t.get("jersey_number", "")
-        detections.append({
-            "label": label,
-            "confidence": t.get("confidence", 0),
-            "box": [bbox.get("x1", 0), bbox.get("y1", 0), bbox.get("x2", 0), bbox.get("y2", 0)],
-            "color": t.get("team_color", ""),
-            "team": 0 if t.get("team") == "home" else (1 if t.get("team") == "away" else -1),
-            "player_id": t.get("track_id"),
-            "jersey_number": jersey,
-        })
-    if ball:
-        bbox = ball.get("bbox", {})
-        detections.append({
-            "label": "Ball",
-            "confidence": ball.get("confidence", 0),
-            "box": [bbox.get("x1", 0), bbox.get("y1", 0), bbox.get("x2", 0), bbox.get("y2", 0)],
-        })
-
-    return {
-        "type": "event",
-        "session_id": data.get("session_id"),
-        "frame_index": data.get("frame_index", 0),
-        "time_sec": data.get("frame_time_sec", 0),
-        "detections": detections,
-        "team_colors": data.get("team_colors", []),
-        "crowd_intensity": data.get("crowd_intensity", -1),
-        "event_type": data.get("event", {}).get("type", "normal_play") if data.get("event") else "normal_play",
-        "tension_score": data.get("event", {}).get("tension_score", 0) if data.get("event") else 0,
-        "description": data.get("event", {}).get("description") if data.get("event") else None,
-        "sentiment": data.get("sentiment"),
-    }
 
 
 manager = ConnectionManager()
