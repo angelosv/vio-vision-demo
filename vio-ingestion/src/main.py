@@ -15,8 +15,9 @@ import os
 import uuid
 from typing import Dict, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_client import Counter, Gauge, generate_latest
 from pydantic import BaseModel
 
 try:
@@ -27,6 +28,20 @@ except ImportError:
 
 from decoder import VideoDecoder, detect_source_type
 from redis_publisher import FramePublisher
+
+
+# Prometheus metrics
+m_sessions_active = Gauge("vio_ingestion_sessions_active", "Active ingest sessions")
+m_frames_published = Counter(
+    "vio_ingestion_frames_published_total",
+    "Frames published to Redis",
+    labelnames=["source_type"],
+)
+m_ingest_errors = Counter(
+    "vio_ingestion_errors_total",
+    "Ingestion errors",
+    labelnames=["source_type"],
+)
 
 
 app = FastAPI(title="Vio Vision Ingestion Service", version="0.1.0")
@@ -62,6 +77,12 @@ sessions: Dict[str, IngestSession] = {}
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "vio-ingestion", "active_sessions": len(sessions)}
+
+
+@app.get("/metrics")
+async def prometheus_metrics():
+    m_sessions_active.set(len(sessions))
+    return Response(content=generate_latest(), media_type="text/plain; version=0.0.4")
 
 
 @app.post("/ingest")
@@ -137,6 +158,7 @@ async def _run_ingest(session: IngestSession) -> None:
         def on_frame(frame, idx):
             publisher.publish(frame, idx, info.fps)
             session.frames_sent = idx + 1
+            m_frames_published.labels(source_type=session.source_type).inc()
 
         # Run decoder in thread executor since OpenCV is blocking
         loop = asyncio.get_event_loop()

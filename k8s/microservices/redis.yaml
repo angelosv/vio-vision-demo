@@ -1,0 +1,39 @@
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vio-redis
+  namespace: vio-demo
+spec:
+  serviceName: vio-redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vio-redis
+  template:
+    metadata:
+      labels:
+        app: vio-redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        args: ["--maxmemory", "4gb", "--maxmemory-policy", "allkeys-lru"]
+        ports:
+        - containerPort: 6379
+        resources:
+          requests: {memory: "1Gi", cpu: "250m"}
+          limits: {memory: "4Gi", cpu: "1000m"}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vio-redis
+  namespace: vio-demo
+spec:
+  selector:
+    app: vio-redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+  clusterIP: None

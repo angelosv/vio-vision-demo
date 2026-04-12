@@ -9,3 +9,4 @@ lap
 openai
 azure-ai-vision-imageanalysis
 python-dotenv
+prometheus-client

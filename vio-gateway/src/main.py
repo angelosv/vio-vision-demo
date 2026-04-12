@@ -29,6 +29,9 @@ except ImportError:
 
 from database import Database
 from grpc_server import serve_grpc
+from auth import ApiClient, registry as auth_registry, require_api_key
+from fastapi import Depends, Response
+import metrics
 
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -114,6 +117,7 @@ class ConnectionManager:
                                 url=data.get("url", ""),
                                 source_type=data.get("source_type"),
                             ))
+                            metrics.sessions_created.inc()
                             await self.broadcast(session_id, {
                                 "type": "metadata",
                                 "api_version": API_VERSION,
@@ -143,6 +147,7 @@ class ConnectionManager:
                         tension = legacy.get("tension_score", 0) or 0
                         if evt_type != "normal_play" or tension >= 3:
                             asyncio.create_task(db.save_event(session_id, legacy))
+                            metrics.events_persisted.labels(event_type=evt_type).inc()
                         await self.broadcast(session_id, legacy)
                 except Exception as e:
                     print(f"[gateway] broadcast error: {e}")
@@ -250,6 +255,12 @@ async def api_info():
     }
 
 
+@app.get("/metrics")
+async def prometheus_metrics():
+    """Prometheus scrape endpoint."""
+    return Response(content=metrics.render(), media_type="text/plain; version=0.0.4")
+
+
 @app.post("/api/start")
 async def start(req: StartRequest):
     """Start a new analysis session via the ingestion service."""
@@ -303,7 +314,12 @@ async def list_active_sessions():
 
 
 @app.get("/api/sessions")
-async def list_sessions(limit: int = 50, offset: int = 0, status: Optional[str] = None):
+async def list_sessions(
+    limit: int = 50,
+    offset: int = 0,
+    status: Optional[str] = None,
+    client: ApiClient = Depends(require_api_key),
+):
     """List session history from Postgres."""
     rows = await db.list_sessions(limit=limit, offset=offset, status=status)
     # Convert datetime to isoformat for JSON
@@ -315,7 +331,7 @@ async def list_sessions(limit: int = 50, offset: int = 0, status: Optional[str] 
 
 
 @app.get("/api/sessions/{session_id}")
-async def get_session(session_id: str):
+async def get_session(session_id: str, client: ApiClient = Depends(require_api_key)):
     row = await db.get_session(session_id)
     if not row:
         raise HTTPException(404, "Session not found")
@@ -332,6 +348,7 @@ async def get_session_events(
     start_sec: Optional[float] = None,
     end_sec: Optional[float] = None,
     limit: int = 10000,
+    client: ApiClient = Depends(require_api_key),
 ):
     events = await db.get_events(session_id, event_type, start_sec, end_sec, limit)
     for e in events:
@@ -342,7 +359,11 @@ async def get_session_events(
 
 
 @app.get("/api/sessions/{session_id}/export")
-async def export_session(session_id: str, format: str = "json"):
+async def export_session(
+    session_id: str,
+    format: str = "json",
+    client: ApiClient = Depends(require_api_key),
+):
     if format == "csv":
         csv_data = await db.export_csv(session_id)
         return PlainTextResponse(csv_data, media_type="text/csv")

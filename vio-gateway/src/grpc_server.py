@@ -17,12 +17,28 @@ from typing import Optional
 import grpc
 import redis.asyncio as aioredis
 
+from auth import registry as auth_registry
 from database import Database
 from proto import match_events_pb2 as pb
 from proto import match_events_pb2_grpc as pb_grpc
 
 
 GRPC_PORT = int(os.getenv("GRPC_PORT", "50051"))
+
+
+async def _check_auth(context) -> bool:
+    """Validate x-api-key from metadata. Returns True if ok, else aborts."""
+    if not auth_registry.enabled:
+        return True
+    metadata = dict(context.invocation_metadata())
+    key = metadata.get("x-api-key")
+    client = auth_registry.resolve(key)
+    if not client:
+        await context.abort(grpc.StatusCode.UNAUTHENTICATED,
+                            "x-api-key metadata required")
+        return False
+    print(f"[grpc] auth: {client.label}")
+    return True
 
 
 # ─── Conversion: JSON payload → protobuf MatchFrame ─────────────────────
@@ -153,6 +169,8 @@ class MatchEventsServicer(pb_grpc.MatchEventsServiceServicer):
 
     async def StreamEvents(self, request: pb.StreamEventsRequest, context):
         """Server-streaming: push live MatchFrames for a session."""
+        if not await _check_auth(context):
+            return
         session_id = request.session_id
         filters = set(request.event_type_filter)
         if not session_id:
@@ -180,6 +198,8 @@ class MatchEventsServicer(pb_grpc.MatchEventsServiceServicer):
             await pubsub.unsubscribe()
 
     async def ListSessions(self, request: pb.ListSessionsRequest, context):
+        if not await _check_auth(context):
+            return pb.ListSessionsResponse()
         limit = request.limit if request.limit > 0 else 50
         offset = request.offset
         status_filter = None
@@ -195,6 +215,8 @@ class MatchEventsServicer(pb_grpc.MatchEventsServiceServicer):
         return resp
 
     async def GetSessionEvents(self, request: pb.GetSessionEventsRequest, context):
+        if not await _check_auth(context):
+            return
         session_id = request.session_id
         start = request.start_time_sec if request.start_time_sec >= 0 else None
         end = request.end_time_sec if request.end_time_sec > 0 else None

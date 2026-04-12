@@ -7,3 +7,4 @@ numpy
 requests
 python-dotenv
 yt-dlp
+prometheus-client

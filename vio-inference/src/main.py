@@ -21,8 +21,9 @@ from typing import Dict, Optional, Set
 import cv2
 import numpy as np
 import redis.asyncio as aioredis
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_client import Counter, Gauge, Histogram, generate_latest
 
 try:
     from dotenv import load_dotenv
@@ -39,6 +40,28 @@ from audio_analyzer import AudioAnalyzer
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 AI_INTERVAL_SEC = float(os.getenv("AI_INTERVAL_SEC", "3.0"))  # GPT-4o call interval
+
+# Prometheus metrics
+m_sessions_active = Gauge("vio_inference_sessions_active", "Active inference sessions")
+m_frames_processed = Counter(
+    "vio_inference_frames_processed_total",
+    "Frames processed by YOLO+ByteTrack",
+)
+m_events_emitted = Counter(
+    "vio_inference_events_emitted_total",
+    "Heuristic events emitted",
+    labelnames=["event_type"],
+)
+m_ai_enrichments = Counter(
+    "vio_inference_ai_enrichments_total",
+    "GPT-4o enrichment calls",
+    labelnames=["trigger"],
+)
+m_frame_latency = Histogram(
+    "vio_inference_frame_latency_seconds",
+    "End-to-end frame inference latency",
+    buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5),
+)
 
 
 app = FastAPI(title="Vio Vision Inference Service", version="0.1.0")
@@ -94,6 +117,12 @@ async def health():
             for s in sessions.values()
         ],
     }
+
+
+@app.get("/metrics")
+async def prometheus_metrics():
+    m_sessions_active.set(len(sessions))
+    return Response(content=generate_latest(), media_type="text/plain; version=0.0.4")
 
 
 async def _listen_for_new_sessions() -> None:
@@ -279,6 +308,12 @@ async def _infer_frame(
     )
 
     session.frames_processed += 1
+    m_frames_processed.inc()
+    if event_out:
+        m_events_emitted.labels(event_type=event_out.get("event_type", "unknown")).inc()
+    if enriched:
+        trigger = heuristic_event.get("event_type") if heuristic_event else "tension"
+        m_ai_enrichments.labels(trigger=trigger).inc()
 
 
 def _detection_to_track(det: Dict) -> Dict:
