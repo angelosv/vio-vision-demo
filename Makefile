@@ -1,42 +1,70 @@
-VERSION ?= v0.4.0
+VERSION ?= v0.5.0
 ACR = reachuqa2.azurecr.io
 NAMESPACE = vio-demo
 
 # ── Local Development ──────────────────────────────────────────────
 
-.PHONY: dev
-dev: ## Run frontend locally (connects to Azure backend via .env.local)
+.PHONY: up
+up: ## Start full stack locally (redis + 3 services)
+	docker compose up --build
+
+.PHONY: up-detached
+up-detached: ## Start stack in background
+	docker compose up -d --build
+
+.PHONY: down
+down: ## Stop local stack
+	docker compose down
+
+.PHONY: logs
+logs: ## Tail logs from all services
+	docker compose logs -f
+
+.PHONY: dev-web
+dev-web: ## Run frontend dev server (connects to local stack)
 	cd web && npm run dev
 
-.PHONY: dev-backend
-dev-backend: ## Run backend locally
-	cd backend && python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+# ── Docker Build (Azure) ───────────────────────────────────────────
 
-# ── Docker Build ───────────────────────────────────────────────────
+.PHONY: build-ingestion
+build-ingestion:
+	docker build -t $(ACR)/vio-ingestion:$(VERSION) vio-ingestion/
+
+.PHONY: build-inference
+build-inference:
+	docker build -t $(ACR)/vio-inference:$(VERSION) vio-inference/
+
+.PHONY: build-gateway
+build-gateway:
+	docker build -t $(ACR)/vio-gateway:$(VERSION) vio-gateway/
 
 .PHONY: build-web
-build-web: ## Build frontend Docker image
+build-web:
 	docker build -t $(ACR)/vio-vision-web:$(VERSION) web/
 
-.PHONY: build-backend
-build-backend: ## Build backend Docker image
-	docker build -t $(ACR)/vio-vision-backend:$(VERSION) backend/
-
 .PHONY: build
-build: build-web build-backend ## Build both images
+build: build-ingestion build-inference build-gateway build-web ## Build all images
 
-# ── Docker Push ────────────────────────────────────────────────────
+# ── Push to ACR ────────────────────────────────────────────────────
+
+.PHONY: push-ingestion
+push-ingestion:
+	docker push $(ACR)/vio-ingestion:$(VERSION)
+
+.PHONY: push-inference
+push-inference:
+	docker push $(ACR)/vio-inference:$(VERSION)
+
+.PHONY: push-gateway
+push-gateway:
+	docker push $(ACR)/vio-gateway:$(VERSION)
 
 .PHONY: push-web
-push-web: ## Push frontend image to ACR
+push-web:
 	docker push $(ACR)/vio-vision-web:$(VERSION)
 
-.PHONY: push-backend
-push-backend: ## Push backend image to ACR
-	docker push $(ACR)/vio-vision-backend:$(VERSION)
-
 .PHONY: push
-push: push-web push-backend ## Push both images
+push: push-ingestion push-inference push-gateway push-web ## Push all images
 
 # ── Deploy ─────────────────────────────────────────────────────────
 
@@ -45,26 +73,23 @@ deploy: ## Apply k8s manifests
 	kubectl apply -f k8s/ -n $(NAMESPACE)
 
 .PHONY: rollout
-rollout: ## Restart deployments to pull latest images
-	kubectl rollout restart deployment/vio-vision-backend -n $(NAMESPACE)
-	kubectl rollout restart deployment/vio-vision-web -n $(NAMESPACE)
+rollout: ## Restart all deployments
+	kubectl rollout restart deployment -n $(NAMESPACE)
 
 .PHONY: status
-status: ## Show pod status
+status:
 	kubectl get pods -n $(NAMESPACE)
 
 # ── Full Pipeline ──────────────────────────────────────────────────
 
-.PHONY: ship-web
-ship-web: build-web push-web rollout ## Build, push, and rollout frontend
-
 .PHONY: ship
-ship: build push deploy rollout ## Build, push, deploy, rollout everything
+ship: build push rollout ## Build + push + rollout everything
 
 # ── Help ───────────────────────────────────────────────────────────
 
 .PHONY: help
-help: ## Show this help
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
+help:
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
+	  awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-18s\033[0m %s\n", $$1, $$2}'
 
 .DEFAULT_GOAL := help

@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+pydantic
+redis[hiredis]
+opencv-python
+numpy
+requests
+python-dotenv
+yt-dlp

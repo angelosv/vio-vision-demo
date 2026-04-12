@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+websockets
+pydantic
+redis[hiredis]
+grpcio
+grpcio-tools
+protobuf
+python-dotenv
+httpx

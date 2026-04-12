@@ -1,0 +1,133 @@
+syntax = "proto3";
+
+package viovision.v1;
+
+// ─── Match Events Service ────────────────────────────────────────────────
+// gRPC streaming for B2B clients (Viaplay, TV2)
+service MatchEventsService {
+  // Stream events for an active match session
+  rpc StreamEvents(StreamEventsRequest) returns (stream MatchFrame);
+
+  // List past sessions
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+
+  // Get historical events for a completed session
+  rpc GetSessionEvents(GetSessionEventsRequest) returns (stream MatchFrame);
+}
+
+// ─── Streaming ──────────────────────────────────────────────────────────
+
+message StreamEventsRequest {
+  string session_id = 1;
+  // Optional filter: only push frames matching these event types
+  repeated string event_type_filter = 2;
+}
+
+message ListSessionsRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  SessionStatus status_filter = 3;
+}
+
+message ListSessionsResponse {
+  repeated Session sessions = 1;
+  int32 total = 2;
+}
+
+message GetSessionEventsRequest {
+  string session_id = 1;
+  // Time window in seconds (0 = from start, -1 = no limit)
+  float start_time_sec = 2;
+  float end_time_sec = 3;
+}
+
+// ─── Core data types ────────────────────────────────────────────────────
+
+// One frame's worth of analysis data
+message MatchFrame {
+  string session_id = 1;
+  int64 timestamp_ms = 2;
+  float frame_time_sec = 3;
+  int64 frame_index = 4;
+
+  repeated TrackedObject tracks = 5;
+  Ball ball = 6;
+  MatchEvent event = 7;
+
+  // Aggregated state
+  Possession possession = 8;
+  float crowd_intensity = 9;  // 0-10
+  string sentiment = 10;      // calm|tense|euphoric|frustrated
+}
+
+message TrackedObject {
+  int64 track_id = 1;         // persistent across frames
+  ObjectType type = 2;
+  string team = 3;             // "home" | "away" | "ref"
+  string jersey_number = 4;    // empty string if unknown
+  Position position = 5;       // normalized [0-1]
+  BoundingBox bbox = 6;        // normalized
+  float confidence = 7;        // 0-1
+  string team_color = 8;       // hex #RRGGBB
+}
+
+enum ObjectType {
+  OBJECT_UNSPECIFIED = 0;
+  OBJECT_PLAYER = 1;
+  OBJECT_GOALKEEPER = 2;
+  OBJECT_REFEREE = 3;
+}
+
+message Ball {
+  Position position = 1;
+  BoundingBox bbox = 2;
+  float confidence = 3;
+  float speed = 4;              // normalized units/sec
+}
+
+message Position {
+  float x = 1;                  // normalized 0-1 (left-right)
+  float y = 2;                  // normalized 0-1 (top-bottom)
+}
+
+message BoundingBox {
+  float x1 = 1;
+  float y1 = 2;
+  float x2 = 3;
+  float y2 = 4;
+}
+
+message Possession {
+  string team = 1;              // "home" | "away" | "none"
+  float home_percent = 2;       // 0-100 rolling window
+  float away_percent = 3;
+}
+
+message MatchEvent {
+  string type = 1;              // goal, yellow_card, red_card, foul, penalty, etc.
+  string description = 2;
+  float tension_score = 3;      // 0-10
+  bool confirmed = 4;
+  int64 event_id = 5;
+}
+
+// ─── Sessions ───────────────────────────────────────────────────────────
+
+message Session {
+  string id = 1;
+  string url = 2;
+  string source_type = 3;       // srt | rtmp | hls | mp4
+  SessionStatus status = 4;
+  string home_team = 5;
+  string away_team = 6;
+  int64 start_time_ms = 7;
+  int64 end_time_ms = 8;
+  float duration_sec = 9;
+}
+
+enum SessionStatus {
+  STATUS_UNSPECIFIED = 0;
+  STATUS_ACTIVE = 1;
+  STATUS_COMPLETED = 2;
+  STATUS_FAILED = 3;
+}

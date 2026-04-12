@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+pydantic
+redis[hiredis]
+opencv-python
+numpy
+ultralytics
+lap
+openai
+azure-ai-vision-imageanalysis
+python-dotenv

@@ -1,0 +1,72 @@
+version: "3.9"
+
+# Local dev stack for Vio Vision microservices.
+# Start with: docker compose up --build
+#
+# Services:
+#   - redis      (frame cache + pub/sub)
+#   - ingestion  (port 8001)
+#   - inference  (port 8002) — GPU optional in dev (falls back to CPU)
+#   - gateway    (port 8000) — WS + REST, frontend connects here
+#
+# The Next.js frontend runs separately with `npm run dev` (see web/.env.local).
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--maxmemory", "2gb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  ingestion:
+    build: ./vio-ingestion
+    ports:
+      - "8001:8001"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - FRAME_TTL_SEC=10
+      - JPEG_QUALITY=80
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  inference:
+    build: ./vio-inference
+    ports:
+      - "8002:8002"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - AI_INTERVAL_SEC=3.0
+      - AZURE_AI_VISION_ENDPOINT=${AZURE_AI_VISION_ENDPOINT:-}
+      - AZURE_AI_VISION_KEY=${AZURE_AI_VISION_KEY:-}
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT:-}
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY:-}
+    # GPU support — uncomment if you have NVIDIA Container Toolkit:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  gateway:
+    build: ./vio-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - INGESTION_URL=http://ingestion:8001
+    depends_on:
+      redis:
+        condition: service_healthy
+      ingestion:
+        condition: service_started
